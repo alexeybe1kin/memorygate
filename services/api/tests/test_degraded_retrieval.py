@@ -120,9 +120,9 @@ def test_health_names_each_failing_dependency(session, no_semantic_retrieval):
     assert body["status"] == "degraded"
     assert body["degraded"] == ["embeddings", "qdrant"]
     # Postgres is the one dependency that really answers here, and it says so.
-    assert body["dependencies"]["postgres"]["status"] == "ok"
-    assert body["dependencies"]["qdrant"]["reason"] == qdrant_store.INDEX_UNREACHABLE
-    assert body["dependencies"]["embeddings"]["status"] == "unavailable"
+    assert body["checks"]["postgres"]["status"] == "ok"
+    assert body["checks"]["qdrant"]["reason"] == qdrant_store.INDEX_UNREACHABLE
+    assert body["checks"]["embeddings"]["status"] == "unavailable"
     # Coarse on purpose: the route is unauthenticated.
     assert "127.0.0.1" not in str(body)
 

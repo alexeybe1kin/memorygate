@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,7 +41,9 @@ from app.services.auth_settings_service import assert_admin_key_configured, ensu
 
 log = logging.getLogger("memorygate")
 
-app = FastAPI(title="MemoryGate")
+SERVICE_VERSION = "0.2.0"
+
+app = FastAPI(title="MemoryGate", version=SERVICE_VERSION)
 
 # Only the bundled dashboard's own origin by default. `*` is available as an
 # explicit development override via MEMORYGATE_CORS_ORIGINS and is logged when
@@ -55,6 +58,8 @@ app.add_middleware(
 
 # `/health` is unauthenticated, so its probes are cached briefly rather than
 # letting an anonymous caller drive one dependency round trip per request.
+# not_configured is healthy: it means "not set up", not "broken".
+HEALTHY_STATUSES = {"ok", "not_configured"}
 HEALTH_CACHE_SECONDS = 5.0
 _health_cache: dict = {}
 
@@ -102,22 +107,31 @@ def shutdown():
 
 @app.get("/health")
 def health():
-    """Real dependency probes. Detail stays coarse - this route has no auth."""
+    """Real dependency probes. Reason stays coarse - this route has no auth.
+
+    Shape is fixed by the Conker module contract - see docs/module-contract.md.
+    The container is `checks`, keyed by name, in every module: one dashboard has
+    to render any of them without a per-module special case.
+    """
     now = time.monotonic()
     cached = _health_cache.get("result")
     if cached and now - _health_cache["checked_at"] < HEALTH_CACHE_SECONDS:
         return {**cached, "age_seconds": round(now - _health_cache["checked_at"], 1)}
-    dependencies = {
+    checks = {
         "postgres": database_health(),
         "qdrant": qdrant_health(),
         "embeddings": embedding_health(),
     }
-    degraded = sorted(name for name, probe in dependencies.items() if probe["status"] != "ok")
+    # not_configured is not a failure. "Nothing here yet" and "it broke" are
+    # different facts, and collapsing them is how a dashboard starts lying.
+    degraded = sorted(name for name, probe in checks.items() if probe["status"] not in HEALTHY_STATUSES)
     result = {
-        "status": "degraded" if degraded else "ok",
         "service": "memorygate",
+        "version": SERVICE_VERSION,
+        "status": "degraded" if degraded else "ok",
         "degraded": degraded,
-        "dependencies": dependencies,
+        "checks": checks,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     _health_cache["result"] = result
     _health_cache["checked_at"] = now
