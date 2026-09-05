@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: memorygate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: memorygate
+      POSTGRES_PASSWORD: memorygate_dev_password
+      POSTGRES_DB: memorygate
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - conker_net
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: memorygate-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6335:6333"
+      - "127.0.0.1:6336:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - conker_net
+
+  ollama:
+    image: ollama/ollama
+    container_name: memorygate-ollama
+    restart: unless-stopped
+    profiles:
+      - local-ai
+    environment:
+      OLLAMA_CONTEXT_LENGTH: "65536"
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - conker_net
+
+  api:
+    build: ./services/api
+    container_name: memorygate-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://memorygate:memorygate_dev_password@postgres:5432/memorygate
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:8020:8020"
+    volumes:
+      - memorygate_backups:/data/backups
+    depends_on:
+      - postgres
+      - qdrant
+    networks:
+      conker_net:
+        aliases:
+          - memorygate-api
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  ollama_data:
+  memorygate_backups:
+
+networks:
+  conker_net:
+    external: true
+    name: conker_net
