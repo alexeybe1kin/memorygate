@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+Versions are the module's own, not an API revision. A change to the shape of any
+endpoint is a contract change and gets its own entry - replacing a module has to be
+a decision with visible consequences.
+
+## 0.2.0
 
 Two defects made MemoryGate untrustworthy in opposite directions: it authenticated
 nobody, and it answered retrieval questions with noise. Both are fixed by making the

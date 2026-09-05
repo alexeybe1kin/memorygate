@@ -50,7 +50,10 @@ jobs:
           echo "all tracked text files are LF"
 
       - name: Tests
-        run: python -m pytest services/api/tests/ --ignore=services/api/tests/test_module_contract.py -q
+        # Run from services/api: the tests import `app.*`, which resolves only
+        # with that directory as the root - the same layout the image uses.
+        working-directory: services/api
+        run: python -m pytest tests/ --ignore=tests/test_module_contract.py -q
 
   contract:
     # The health contract is an HTTP contract, so it is asserted against a
