@@ -54,6 +54,9 @@ class SecurityAndRuntimeContractTests(unittest.TestCase):
                 self.assertFalse(verify_agent_access_key(db, "mg_read_test_bootstrap_key_123", "other_agent"))
             finally:
                 db.close()
+                # Windows cannot remove the temporary directory while the SQLite
+                # file handle is still open.
+                engine.dispose()
 
     def test_backup_path_cannot_escape_backup_directory(self):
         previous = backup_service.BACKUP_DIR

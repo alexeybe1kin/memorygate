@@ -7,3 +7,5 @@ build
 .claude
 # Local visual reference clones are not part of MemoryGate.
 example/
+data/
+.pytest_cache/

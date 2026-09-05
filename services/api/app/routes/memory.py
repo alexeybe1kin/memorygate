@@ -13,10 +13,13 @@ from app.services.classifier import classify_memory, normalize_memory_type, CURR
 from app.services.signal_filter import score_value, novelty_bucket, NOVELTY_DUPLICATE, NOVELTY_LOW
 from app.services.agent_config_service import get_or_create_config
 from app.services.qdrant_store import (
+    INDEX_UNREACHABLE,
+    index_after_commit,
     upsert_memory_embedding,
     search_memory_embeddings,
     find_near_duplicate,
     delete_memory_embedding,
+    semantic_status,
 )
 from app.services.scoring import memory_rank_bonus, memory_strength
 from app.services.memory_truth import add_revision, detect_conflicts
@@ -136,6 +139,7 @@ def _upgrade_existing_memory(db, row, payload, final_memory_type, final_confiden
     new_strength = memory_strength(final_memory_type, final_confidence)
 
     upgraded = False
+    indexing = {"status": "ok"}
     if new_strength > old_strength:
         row.memory_type = final_memory_type
         row.confidence = final_confidence
@@ -161,7 +165,8 @@ def _upgrade_existing_memory(db, row, payload, final_memory_type, final_confiden
         ))
         db.commit()
 
-        upsert_memory_embedding(
+        indexing = index_after_commit(
+            upsert_memory_embedding,
             row.id,
             row.text,
             payload={
@@ -173,7 +178,7 @@ def _upgrade_existing_memory(db, row, payload, final_memory_type, final_confiden
             },
         )
 
-    return {
+    result = {
         "status": "ok",
         "id": row.id,
         "memory_type": row.memory_type,
@@ -181,6 +186,9 @@ def _upgrade_existing_memory(db, row, payload, final_memory_type, final_confiden
         "duplicate_of": row.id,
         "upgraded": upgraded,
     }
+    if indexing["status"] != "ok":
+        result["indexing"] = indexing
+    return result
 
 @router.post("/write")
 def write_memory(payload: MemoryWriteRequest, header_agent_id: str = Depends(get_agent_id)):
@@ -232,8 +240,17 @@ def write_memory(payload: MemoryWriteRequest, header_agent_id: str = Depends(get
                     final_summary,
                 )
 
-        # novelty check via vector similarity, scoped to this agent
-        near_hits = find_near_duplicate(payload.text, limit=3, agent_id=agent_id)
+        # Novelty check via vector similarity, scoped to this agent. Without a
+        # working vector path there is no near-duplicate signal at all, so the
+        # write proceeds and reports that the check did not run - treating the
+        # text as new without saying so would let duplicates pile up unannounced.
+        novelty = semantic_status()
+        near_hits = []
+        if novelty["status"] == "ok":
+            try:
+                near_hits = find_near_duplicate(payload.text, limit=3, agent_id=agent_id)
+            except Exception:
+                novelty = {"status": "degraded", "component": "vector_index", "reason": INDEX_UNREACHABLE}
         best_score = near_hits[0]["score"] if near_hits else None
         bucket = novelty_bucket(best_score, config.novelty_threshold) if config.signal_filter_enabled else (
             "duplicate" if best_score is not None and best_score >= 0.92 else "new"
@@ -275,7 +292,8 @@ def write_memory(payload: MemoryWriteRequest, header_agent_id: str = Depends(get
         detect_conflicts(db, memory)
         db.commit()
 
-        upsert_memory_embedding(
+        indexing = index_after_commit(
+            upsert_memory_embedding,
             memory.id,
             memory.text,
             payload={
@@ -310,6 +328,12 @@ def write_memory(payload: MemoryWriteRequest, header_agent_id: str = Depends(get
         }
         if low_novelty:
             response["low_novelty"] = True
+        if indexing["status"] != "ok":
+            # The row is committed and lexically searchable; say plainly that it
+            # is not in the vector index rather than implying a complete write.
+            response["indexing"] = indexing
+        if novelty["status"] != "ok":
+            response["novelty_check"] = novelty
         return response
     finally:
         db.close()
@@ -319,12 +343,19 @@ def search_memory(payload: MemorySearchRequest, header_agent_id: str = Depends(g
     agent_id = resolve_agent_id(header_agent_id, payload.agent_id)
     db = SessionLocal()
     try:
-        hits = search_memory_embeddings(payload.query, limit=20, agent_id=agent_id)
+        retrieval = semantic_status()
+        hits = []
+        if retrieval["status"] == "ok":
+            try:
+                hits = search_memory_embeddings(payload.query, limit=20, agent_id=agent_id)
+            except Exception:
+                retrieval = {"status": "degraded", "component": "vector_index", "reason": INDEX_UNREACHABLE}
         id_to_score = {h["id"]: h["score"] for h in hits}
         ids = list(id_to_score.keys())
 
         rows = []
         scores = {}
+        path = "semantic"
         if ids:
             id_to_rank = {memory_id: idx for idx, memory_id in enumerate(ids)}
             fetched = db.execute(
@@ -352,6 +383,7 @@ def search_memory(payload: MemorySearchRequest, header_agent_id: str = Depends(g
             rows = [row for _, row in rescored]
             scores = id_to_score
         else:
+            path = "lexical"
             rows = db.execute(
                 select(Memory)
                 .where(Memory.agent_id == agent_id, Memory.text.ilike(f"%{payload.query}%"))
@@ -359,7 +391,12 @@ def search_memory(payload: MemorySearchRequest, header_agent_id: str = Depends(g
                 .limit(20)
             ).scalars().all()
 
-        return {"results": [_row_to_dict(row, scores.get(row.id)) for row in rows]}
+        results = []
+        for row in rows:
+            item = _row_to_dict(row, scores.get(row.id))
+            item["retrieval_path"] = path
+            results.append(item)
+        return {"results": results, "retrieval": {"mode": path, "semantic": retrieval}}
     finally:
         db.close()
 
@@ -417,7 +454,8 @@ def patch_memory(memory_id: str, payload: MemoryPatchRequest, agent_id: str = De
         db.commit()
         db.refresh(row)
 
-        upsert_memory_embedding(
+        indexing = index_after_commit(
+            upsert_memory_embedding,
             row.id,
             row.text,
             payload={
@@ -433,7 +471,10 @@ def patch_memory(memory_id: str, payload: MemoryPatchRequest, agent_id: str = De
         detect_conflicts(db, row)
         db.commit()
 
-        return {"status": "ok", "memory": _row_to_dict(row)}
+        result = {"status": "ok", "memory": _row_to_dict(row)}
+        if indexing["status"] != "ok":
+            result["indexing"] = indexing
+        return result
     finally:
         db.close()
 

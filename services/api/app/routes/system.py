@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from app.core.db import SessionLocal
@@ -9,6 +11,16 @@ from app.services.ollama_service import ollama_health
 from app.schemas.auth_settings import AiRuntimeUpdateRequest, MemoryResetRequest
 
 router = APIRouter(prefix="/system", tags=["system"])
+
+# A destructive action takes a second, deliberate confirmation on top of admin
+# auth: the exact phrase, typed. The admin key alone is not enough, so a script
+# or a stray tab holding a valid key cannot wipe the workspace by accident.
+MEMORY_RESET_PHRASE = "RESET MEMORY"
+
+
+def _require_confirmation(provided: str, expected: str) -> None:
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(400, f'Type "{expected}" to confirm this destructive action.')
 
 
 @router.get("/backups")
@@ -77,8 +89,7 @@ def memory_reset(payload: MemoryResetRequest, request: Request):
     db = SessionLocal()
     try:
         _confirm_admin(db, payload.current_key, request, "memory-reset")
-        if payload.confirmation != "RESET MEMORY":
-            raise HTTPException(400, 'Type "RESET MEMORY" to confirm this destructive action.')
+        _require_confirmation(payload.confirmation, MEMORY_RESET_PHRASE)
         return reset_memory(db, payload.reset_from)
     finally:
         db.close()

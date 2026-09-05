@@ -4,7 +4,7 @@ that happen to share a name never collide."""
 import json
 from sqlalchemy import select, func, text
 from app.models.entity import Entity
-from app.services.qdrant_store import find_similar_entities, delete_entity_embedding
+from app.services.qdrant_store import INDEX_UNREACHABLE, find_similar_entities, delete_entity_embedding, semantic_status
 
 DEDUP_SIMILARITY_THRESHOLD = 0.9
 
@@ -13,7 +13,13 @@ def _normalize(name: str) -> str:
     return " ".join(name.strip().lower().split())
 
 
-def find_duplicate(db, agent_id: str, entity_type: str, name: str) -> Entity | None:
+def find_duplicate(db, agent_id: str, entity_type: str, name: str) -> tuple[Entity | None, dict]:
+    """Return the duplicate, if any, and the status of the similarity tier.
+
+    Exact-name matching never needs a vector. When the similarity tier cannot
+    run, "no duplicate" means "none found by exact name" - the caller reports
+    that rather than presenting a partial check as a complete one.
+    """
     normalized = _normalize(name)
     exact = db.execute(
         select(Entity).where(
@@ -23,13 +29,19 @@ def find_duplicate(db, agent_id: str, entity_type: str, name: str) -> Entity | N
         )
     ).scalars().first()
     if exact:
-        return exact
+        return exact, {"status": "ok", "component": None, "reason": None}
 
-    hits = find_similar_entities(name, agent_id=agent_id, entity_type=entity_type, limit=1)
+    status = semantic_status()
+    if status["status"] != "ok":
+        return None, status
+    try:
+        hits = find_similar_entities(name, agent_id=agent_id, entity_type=entity_type, limit=1)
+    except Exception:
+        return None, {"status": "degraded", "component": "vector_index", "reason": INDEX_UNREACHABLE}
     if hits and hits[0]["score"] >= DEDUP_SIMILARITY_THRESHOLD:
-        return db.get(Entity, hits[0]["id"])
+        return db.get(Entity, hits[0]["id"]), status
 
-    return None
+    return None, status
 
 
 def merge_entities(db, agent_id: str, keep_id: str, merge_id: str) -> Entity:

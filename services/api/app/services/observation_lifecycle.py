@@ -2,16 +2,28 @@
 from datetime import datetime, timezone
 from sqlalchemy import select
 from app.models.observation import Observation
-from app.services.qdrant_store import find_similar_observations
+from app.services.qdrant_store import INDEX_UNREACHABLE, find_similar_observations, semantic_status
 
 DEDUP_SIMILARITY_THRESHOLD = 0.85
 
 
-def find_duplicate(agent_id: str, signal_type: str, description: str) -> dict | None:
-    hits = find_similar_observations(description, agent_id=agent_id, signal_type=signal_type, limit=1)
+def find_duplicate(agent_id: str, signal_type: str, description: str) -> tuple[dict | None, dict]:
+    """Return the duplicate, if any, and the status of the check.
+
+    Observation dedup is purely vector-based, so without a vector path there is
+    no duplicate signal at all - "None" here means "not checked", and the caller
+    says so instead of implying the observation is known to be new.
+    """
+    status = semantic_status()
+    if status["status"] != "ok":
+        return None, status
+    try:
+        hits = find_similar_observations(description, agent_id=agent_id, signal_type=signal_type, limit=1)
+    except Exception:
+        return None, {"status": "degraded", "component": "vector_index", "reason": INDEX_UNREACHABLE}
     if hits and hits[0]["score"] >= DEDUP_SIMILARITY_THRESHOLD:
-        return hits[0]
-    return None
+        return hits[0], status
+    return None, status
 
 
 def enforce_budget(db, agent_id: str, max_observations: int) -> None:

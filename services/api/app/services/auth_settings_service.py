@@ -15,6 +15,34 @@ _MAX_FAILED_ATTEMPTS = 5
 _LOCKOUT_SECONDS = 300
 _attempt_state: dict[str, dict[str, float | int]] = {}
 
+# An environment key is a machine secret, so it is held to a length floor rather
+# than to the human-password character classes `validate_new_admin_key` applies
+# to a key an owner types into the dashboard.
+MIN_ENV_ADMIN_KEY_LENGTH = 16
+
+NO_ADMIN_KEY_ERROR = """MemoryGate refuses to start: no admin key is configured.
+
+Without one, every route - including POST /system/memory-reset - would be open
+to anything that can reach the port.
+
+Fix, in the directory that holds docker-compose.yml:
+
+    echo "MEMORYGATE_ADMIN_KEY=$(openssl rand -base64 24)" >> .env
+    docker compose up -d api
+
+The key must be at least {minimum} characters. Once the service is running you
+can replace it with a database-managed key from the dashboard's Settings screen;
+after that the environment variable is no longer consulted."""
+
+SHORT_ADMIN_KEY_ERROR = """MemoryGate refuses to start: MEMORYGATE_ADMIN_KEY is too short.
+
+It is {actual} characters; at least {minimum} are required.
+
+Fix, in the directory that holds docker-compose.yml:
+
+    echo "MEMORYGATE_ADMIN_KEY=$(openssl rand -base64 24)" >> .env
+    docker compose up -d api"""
+
 
 def _hash_key(key: str, salt: bytes | None = None) -> str:
     salt = salt or secrets.token_bytes(16)
@@ -43,16 +71,43 @@ def get_auth_state(db) -> dict:
         return {"auth_enabled": True, "key_source": "database", "has_managed_key": True}
     if MEMORYGATE_ADMIN_KEY:
         return {"auth_enabled": True, "key_source": "environment", "has_managed_key": False}
-    return {"auth_enabled": False, "key_source": "disabled", "has_managed_key": False}
+    # Unreachable while the service is running: `assert_admin_key_configured`
+    # refuses startup in this state. Reported truthfully rather than assumed.
+    return {"auth_enabled": False, "key_source": "unconfigured", "has_managed_key": False}
 
 
 def verify_admin_key(db, key: str | None) -> bool:
+    """Fail closed. An unconfigured MemoryGate authenticates nobody.
+
+    This used to return True when neither key source existed, which made a
+    freshly composed instance fully unauthenticated. Startup now refuses that
+    state outright, and this check no longer depends on it having done so.
+    """
     row = get_auth_row(db)
     if row and row.admin_key_hash:
         return bool(key) and _verify_key(key, row.admin_key_hash)
     if not MEMORYGATE_ADMIN_KEY:
-        return True
+        return False
     return bool(key) and secrets.compare_digest(key, MEMORYGATE_ADMIN_KEY)
+
+
+def assert_admin_key_configured(db) -> str:
+    """Return the configured key source, or raise with the exact fix.
+
+    Called once at startup. Secure by default, or refuse to start.
+    """
+    row = get_auth_row(db)
+    if row and row.admin_key_hash:
+        return "database"
+    if not MEMORYGATE_ADMIN_KEY:
+        raise RuntimeError(NO_ADMIN_KEY_ERROR.format(minimum=MIN_ENV_ADMIN_KEY_LENGTH))
+    if len(MEMORYGATE_ADMIN_KEY) < MIN_ENV_ADMIN_KEY_LENGTH:
+        raise RuntimeError(
+            SHORT_ADMIN_KEY_ERROR.format(
+                actual=len(MEMORYGATE_ADMIN_KEY), minimum=MIN_ENV_ADMIN_KEY_LENGTH
+            )
+        )
+    return "environment"
 
 
 def validate_new_admin_key(key: str) -> str | None:

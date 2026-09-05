@@ -35,8 +35,27 @@ Agent read key --> bounded context retrieval --> Memory Lab or agent response
 
 - **PostgreSQL** is the source of truth for all memory, evidence, history, audit, and configuration records.
 - **Qdrant** is the semantic vector index used to retrieve meaningfully related memories, entities, and observations.
-- **Embeddings** use `sentence-transformers/all-MiniLM-L6-v2` with 384 dimensions by default.
 - **Lexical matching** supplements vector results so exact names and project terms are not hidden by similarity ranking.
+- **Embeddings are not shipped yet.** No embedding provider is installed in the API image, so semantic
+  retrieval is unavailable and MemoryGate says so instead of guessing.
+
+### Semantic retrieval is currently degraded
+
+This is a known, reported state, not a silent one:
+
+- `GET /health` reports `degraded` and names `embeddings`.
+- `POST /runtime/context` and `POST /memory/search` return a `retrieval` block giving the mode
+  (`hybrid` or `lexical`) and why semantic search is unavailable, and every result carries the
+  `retrieval_path` that produced it.
+- `/runtime/context` also states the degradation inside `usage.instruction`, which is the text the
+  reading model actually sees.
+- Writes still succeed - Postgres is the source of truth - and report `indexing: degraded` when the
+  row could not be added to the vector index, plus `novelty_check: degraded` when the near-duplicate
+  check could not run.
+
+An earlier `EMBED_MODEL=hash` mode has been **removed**. It derived each vector component from
+`sha256(index:text)`, so near-identical sentences produced uncorrelated vectors and cosine similarity
+over them was noise. It made retrieval look like it worked while returning confident nonsense.
 
 Changing the configured LLM does **not** change the vector database or embeddings. The LLM is used only for bounded evidence analysis and read-only answers.
 
@@ -44,6 +63,15 @@ Changing the configured LLM does **not** change the vector database or embedding
 
 MemoryGate assumes the dashboard is an administrative surface and keeps agents on a separate read-only interface.
 
+- **MemoryGate refuses to start with no admin key configured.** There is no open fallback tier; the
+  startup error names the exact fix. A key supplied through `MEMORYGATE_ADMIN_KEY` must be at least
+  16 characters.
+- **CORS defaults to the bundled dashboard's own origins** (`http://localhost:8021`,
+  `http://127.0.0.1:8021`). `MEMORYGATE_CORS_ORIGINS=*` is a development override only - a wildcard
+  puts every route in reach of any page the owner has open, and it is logged as a warning at startup.
+- Destructive actions need a second, deliberate confirmation on top of admin auth: `POST
+  /system/memory-reset` requires the exact phrase `RESET MEMORY`. A valid admin key alone is not
+  enough.
 - Admin keys are stored as PBKDF2-SHA256 hashes, never plaintext.
 - Failed key verification is limited to five attempts with a five-minute lockout per client scope.
 - Agent read keys are separate, scoped credentials. They can retrieve context but cannot ingest, edit, reset, or administer MemoryGate.
@@ -63,9 +91,18 @@ Local deployment protects against remote misuse, not a fully compromised host. R
 
 ### Start the services
 
+`docker-compose.yml` joins an external Docker network and reads an optional `.env`. Both are
+prerequisites of a clean checkout:
+
 ```bash
+docker network create conker_net          # once; compose declares it external
+cp .env.example .env
+echo "MEMORYGATE_ADMIN_KEY=$(openssl rand -base64 24)" >> .env
 docker compose up -d --build
 ```
+
+Without an admin key the API exits at startup with an error naming this exact fix. That is
+deliberate: a service with no key configured must not fall back to open.
 
 Start the optional local Ollama runtime only when you explicitly want it:
 
@@ -232,12 +269,30 @@ npm ci
 npm run build
 ```
 
+### Tests
+
+```bash
+cd services/api
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests
+```
+
+On Windows, drop `uvloop` from the install: it has no Windows build. The suite needs no running
+services - it uses a real SQLite database and points its dependency probes at a closed port so the
+degraded paths are exercised for real rather than mocked.
+
 ### Verification
 
 ```powershell
 docker ps
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8020/health
 ```
+
+`GET /health` is unauthenticated and runs real probes against PostgreSQL, Qdrant, and the embedding
+provider. It reports `ok` only when all three answer, and otherwise `degraded` with each failing
+dependency named. Probe detail is deliberately coarse, since the route has no auth. Results are
+cached for five seconds and carry their `age_seconds`.
 
 ## Project Layout
 

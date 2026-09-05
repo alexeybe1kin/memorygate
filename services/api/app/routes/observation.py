@@ -17,7 +17,7 @@ from app.schemas.observation import (
 from app.services.agent_config_service import get_or_create_config
 from app.services.observation_lifecycle import find_duplicate, enforce_budget, apply_session_context
 from app.services.pattern_promotion import promote_from_observations
-from app.services.qdrant_store import upsert_observation_embedding, delete_observation_embedding
+from app.services.qdrant_store import index_after_commit, upsert_observation_embedding, delete_observation_embedding
 
 router = APIRouter(prefix="/observation", tags=["observation"])
 
@@ -57,7 +57,7 @@ def create_observation(payload: ObservationCreateRequest, header_agent_id: str =
     agent_id = resolve_agent_id(header_agent_id, payload.agent_id)
     db = SessionLocal()
     try:
-        dup = find_duplicate(agent_id, payload.signal_type, payload.description)
+        dup, dedup = find_duplicate(agent_id, payload.signal_type, payload.description)
         if dup:
             row = db.get(Observation, dup["id"])
             if row and row.agent_id == agent_id:
@@ -90,7 +90,8 @@ def create_observation(payload: ObservationCreateRequest, header_agent_id: str =
         db.commit()
         db.refresh(row)
 
-        upsert_observation_embedding(
+        indexing = index_after_commit(
+            upsert_observation_embedding,
             row.id,
             row.description,
             payload={"agent_id": agent_id, "signal_type": row.signal_type, "status": row.status},
@@ -98,7 +99,12 @@ def create_observation(payload: ObservationCreateRequest, header_agent_id: str =
 
         promote_from_observations(db, agent_id, signal_type=row.signal_type)
 
-        return {"status": "ok", "observation": _obs_to_dict(row)}
+        result = {"status": "ok", "observation": _obs_to_dict(row)}
+        if indexing["status"] != "ok":
+            result["indexing"] = indexing
+        if dedup["status"] != "ok":
+            result["dedup"] = dedup
+        return result
     finally:
         db.close()
 

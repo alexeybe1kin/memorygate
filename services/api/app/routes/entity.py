@@ -14,7 +14,7 @@ from app.schemas.entity import (
     EntityMergeRequest,
 )
 from app.services.entity_dedup import find_duplicate, merge_entities
-from app.services.qdrant_store import upsert_entity_embedding, delete_entity_embedding
+from app.services.qdrant_store import index_after_commit, upsert_entity_embedding, delete_entity_embedding
 
 router = APIRouter(prefix="/entity", tags=["entity"])
 
@@ -74,7 +74,7 @@ def create_entity(payload: EntityCreateRequest, header_agent_id: str = Depends(g
     agent_id = resolve_agent_id(header_agent_id, payload.agent_id)
     db = SessionLocal()
     try:
-        dup = find_duplicate(db, agent_id, payload.entity_type, payload.name)
+        dup, dedup = find_duplicate(db, agent_id, payload.entity_type, payload.name)
         if dup:
             before = _entity_to_dict(dup)
 
@@ -124,7 +124,7 @@ def create_entity(payload: EntityCreateRequest, header_agent_id: str = Depends(g
         db.commit()
         db.refresh(entity)
 
-        upsert_entity_embedding(entity.id, entity.name, payload={"agent_id": agent_id, "entity_type": entity.entity_type})
+        indexing = index_after_commit(upsert_entity_embedding, entity.id, entity.name, payload={"agent_id": agent_id, "entity_type": entity.entity_type})
 
         db.add(EntityHistory(
             entity_id=entity.id,
@@ -136,7 +136,12 @@ def create_entity(payload: EntityCreateRequest, header_agent_id: str = Depends(g
         ))
         db.commit()
 
-        return {"status": "ok", "entity": _entity_to_dict(entity)}
+        result = {"status": "ok", "entity": _entity_to_dict(entity)}
+        if indexing["status"] != "ok":
+            result["indexing"] = indexing
+        if dedup["status"] != "ok":
+            result["dedup"] = dedup
+        return result
     finally:
         db.close()
 
@@ -216,8 +221,9 @@ def update_entity(entity_id: str, payload: EntityUpdateRequest, agent_id: str = 
         db.commit()
         db.refresh(row)
 
+        indexing = {"status": "ok"}
         if name_changed:
-            upsert_entity_embedding(row.id, row.name, payload={"agent_id": row.agent_id, "entity_type": row.entity_type})
+            indexing = index_after_commit(upsert_entity_embedding, row.id, row.name, payload={"agent_id": row.agent_id, "entity_type": row.entity_type})
 
         after = _entity_to_dict(row)
 
@@ -231,7 +237,10 @@ def update_entity(entity_id: str, payload: EntityUpdateRequest, agent_id: str = 
         ))
         db.commit()
 
-        return {"status": "ok", "entity": after}
+        result = {"status": "ok", "entity": after}
+        if indexing["status"] != "ok":
+            result["indexing"] = indexing
+        return result
     finally:
         db.close()
 
@@ -443,8 +452,9 @@ def update_entity_by_id(payload: EntityUpdateByIdRequest, agent_id: str = Depend
         db.commit()
         db.refresh(row)
 
+        indexing = {"status": "ok"}
         if name_changed:
-            upsert_entity_embedding(row.id, row.name, payload={"agent_id": row.agent_id, "entity_type": row.entity_type})
+            indexing = index_after_commit(upsert_entity_embedding, row.id, row.name, payload={"agent_id": row.agent_id, "entity_type": row.entity_type})
 
         after = _entity_to_dict(row)
 
@@ -458,6 +468,9 @@ def update_entity_by_id(payload: EntityUpdateByIdRequest, agent_id: str = Depend
         ))
         db.commit()
 
-        return {"status": "ok", "entity": after}
+        result = {"status": "ok", "entity": after}
+        if indexing["status"] != "ok":
+            result["indexing"] = indexing
+        return result
     finally:
         db.close()

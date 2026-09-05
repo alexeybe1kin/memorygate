@@ -17,7 +17,7 @@ from app.models.object_link import ObjectLink
 from app.models.processing_job import ProcessingJob
 from app.schemas.runtime import AgentContextRequest, IngestEventRequest, MemoryQuestionRequest
 from app.services.briefing import build_briefing
-from app.services.qdrant_store import search_memory_embeddings
+from app.services.qdrant_store import INDEX_UNREACHABLE, search_memory_embeddings, semantic_status
 from app.services.ollama_service import answer_with_context, ollama_health
 from app.services.scoring import memory_rank_bonus
 from app.services.memory_truth import mark_unsupported
@@ -104,18 +104,29 @@ def listener_ingest(source_key: str, payload: IngestEventRequest, request: Reque
 
 def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
         memories = []
-        try:
-            hits = search_memory_embeddings(payload.query, limit=payload.max_items * 2, agent_id=agent_id)
-            for hit in hits:
-                row = db.get(Memory, hit["id"])
-                if row and row.agent_id == agent_id and row.status == "active":
-                    score = hit["score"] + memory_rank_bonus(row.memory_type, row.confidence)
-                    memories.append({"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
-                                     "confidence": row.confidence, "score": round(score, 4), "source_type": row.source_type})
-        except Exception:
+        # Ask first whether semantic retrieval can run, so a degraded answer is
+        # reported as degraded. The old bare `except Exception` here swallowed an
+        # unreachable index and returned lexical results as if they were vector
+        # ones - the caller could not tell the difference.
+        retrieval = semantic_status()
+        if retrieval["status"] == "ok":
+            try:
+                hits = search_memory_embeddings(payload.query, limit=payload.max_items * 2, agent_id=agent_id)
+                for hit in hits:
+                    row = db.get(Memory, hit["id"])
+                    if row and row.agent_id == agent_id and row.status == "active":
+                        score = hit["score"] + memory_rank_bonus(row.memory_type, row.confidence)
+                        memories.append({"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
+                                         "confidence": row.confidence, "score": round(score, 4), "source_type": row.source_type,
+                                         "retrieval_path": "semantic"})
+            except Exception:
+                retrieval = {"status": "degraded", "component": "vector_index", "reason": INDEX_UNREACHABLE}
+                memories = []
+        if retrieval["status"] != "ok":
             rows = db.execute(select(Memory).where(Memory.agent_id == agent_id, Memory.status == "active", Memory.text.ilike(f"%{payload.query}%")).limit(payload.max_items)).scalars().all()
             memories = [{"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
-                         "confidence": row.confidence, "score": memory_rank_bonus(row.memory_type, row.confidence), "source_type": row.source_type} for row in rows]
+                         "confidence": row.confidence, "score": memory_rank_bonus(row.memory_type, row.confidence), "source_type": row.source_type,
+                         "retrieval_path": "lexical"} for row in rows]
         # Vector similarity is useful but must not hide an exact project/name
         # match. Add lexical candidates so retrieval is robust during early or
         # sparse embedding collections too.
@@ -129,7 +140,7 @@ def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
             if matches:
                 memories.append({"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
                                  "confidence": row.confidence, "score": round(memory_rank_bonus(row.memory_type, row.confidence) + matches * 0.3, 4),
-                                 "source_type": row.source_type})
+                                 "source_type": row.source_type, "retrieval_path": "lexical"})
         memories.sort(key=lambda item: item["score"], reverse=True)
 
         terms = [term for term in payload.query.split() if len(term) > 2][:8]
@@ -141,13 +152,23 @@ def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
         evidence = []
         if payload.include_evidence:
             evidence = db.execute(select(EvidenceObject).where(EvidenceObject.agent_id == agent_id, EvidenceObject.invalidated_at.is_(None), evidence_filter).limit(5)).scalars().all()
+        # The reading model sees this string, so degradation is stated here and
+        # not only in the `retrieval` block a caller might never look at.
+        instruction = "Use high-confidence memories and entities first. Treat episodes/evidence as supporting context, not settled truth."
+        if retrieval["status"] != "ok":
+            instruction += (
+                f" Semantic retrieval is unavailable ({retrieval['reason']}); these results come from"
+                " literal word matching only, so memories phrased differently are missing."
+                " Treat this list as incomplete."
+            )
         return {
             "query": payload.query, "agent_id": agent_id, "briefing": build_briefing(db, agent_id),
+            "retrieval": {"mode": "hybrid" if retrieval["status"] == "ok" else "lexical", "semantic": retrieval},
             "memories": memories[:payload.max_items],
             "entities": [{"id": r.id, "name": r.name, "type": r.entity_type, "description": r.description, "summary": r.agent_summary, "attributes": json.loads(r.attributes_json)} for r in entities],
             "episodes": [{"id": r.id, "title": r.title, "summary": r.summary, "occurred_start": r.occurred_start.isoformat() if r.occurred_start else None} for r in episodes],
             "evidence": [{"id": r.id, "title": r.title, "summary": r.summary, "source": r.source_key, "occurred_at": r.occurred_at.isoformat()} for r in evidence],
-            "usage": {"instruction": "Use high-confidence memories and entities first. Treat episodes/evidence as supporting context, not settled truth."},
+            "usage": {"instruction": instruction},
         }
 
 
@@ -164,6 +185,7 @@ def agent_context(payload: AgentContextRequest, header_agent_id: str = Depends(g
                 "agent_id": agent_id,
                 "max_items": payload.max_items,
                 "include_evidence": payload.include_evidence,
+                "retrieval_mode": (context.get("retrieval") or {}).get("mode"),
                 "result_counts": {
                     "memories": len(context.get("memories") or []),
                     "entities": len(context.get("entities") or []),
@@ -193,6 +215,7 @@ def ask_memorygate(payload: MemoryQuestionRequest, header_agent_id: str = Depend
             payload_json=json.dumps({
                 "agent_id": agent_id,
                 "include_evidence": payload.include_evidence,
+                "retrieval_mode": (context.get("retrieval") or {}).get("mode"),
                 "result_counts": {
                     "memories": len(context.get("memories") or []),
                     "entities": len(context.get("entities") or []),

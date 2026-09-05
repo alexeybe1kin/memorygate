@@ -1,8 +1,11 @@
 # Agent integration
 
-MemoryGate now has two stable runtime calls. Your agent wrapper should expose
-these to the conversational agent rather than exposing the database CRUD
-routes.
+MemoryGate has three runtime calls. Your agent wrapper should expose these to
+the conversational agent rather than exposing the database CRUD routes.
+
+Two are documented below. The third, `POST /runtime/ask`, retrieves the same
+context and has a local model answer from it; it returns 503 when no answer
+provider is reachable.
 
 ## Retrieve context
 
@@ -28,6 +31,35 @@ The response contains a bounded briefing, ranked memories, matching entities,
 episodes, and optionally raw evidence. The agent should treat memories and
 entities as primary context. Episodes and evidence are supporting material,
 not automatically settled truth.
+
+`session_context` is accepted by the schema but no code path reads it. It is
+recorded here so a caller does not assume it influences retrieval.
+
+### Which retrieval path produced the answer
+
+Every response carries a `retrieval` block, and every memory carries the path
+that found it:
+
+```json
+{
+  "retrieval": {
+    "mode": "lexical",
+    "semantic": {
+      "status": "degraded",
+      "component": "embeddings",
+      "reason": "embedding provider ... is not installed"
+    }
+  },
+  "memories": [{ "retrieval_path": "lexical", "...": "..." }]
+}
+```
+
+`mode` is `hybrid` when vector search ran and `lexical` when it could not.
+When semantic retrieval is degraded the same warning is appended to
+`usage.instruction`, so a reading model is told the result set is incomplete
+rather than being handed a confident-looking list. **No embedding provider
+ships in the API image today**, so `lexical` is the current state - see the
+README's "Semantic retrieval is currently degraded".
 
 ## Ingest an event
 

@@ -1,8 +1,11 @@
+import logging
 import os
+import time
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.db import Base, engine
+from app.core.config import CORS_ANY_ORIGIN, CORS_ORIGINS
+from app.core.db import Base, database_health, engine
 from app.core.migrations import run_migrations
 from app.core.auth import require_key
 from app.routes.memory import router as memory_router
@@ -30,42 +33,67 @@ from app.models import observation
 from app.models import pattern
 from app.models import session_transcript
 from app.models import ai_runtime_setting
-from app.services.qdrant_store import ensure_qdrant_collection, ensure_observation_collection, ensure_entity_collection
-from app.services.embeddings import get_embedding_model, embed_text
+from app.services.qdrant_store import ensure_qdrant_collection, ensure_observation_collection, ensure_entity_collection, qdrant_health
+from app.services.embeddings import embedding_health
 from app.services.processing_worker import start_worker, stop_worker
-from app.services.auth_settings_service import ensure_bootstrap_agent_access_key
+from app.services.auth_settings_service import assert_admin_key_configured, ensure_bootstrap_agent_access_key
+
+log = logging.getLogger("memorygate")
 
 app = FastAPI(title="MemoryGate")
 
-# The dashboard is served from a different port than the API; key auth is
-# header-based (no cookies), so permissive CORS carries no meaningful extra
-# risk here - matches ToolGate's dashboard/API CORS posture.
+# Only the bundled dashboard's own origin by default. `*` is available as an
+# explicit development override via MEMORYGATE_CORS_ORIGINS and is logged when
+# used, because a wildcard puts every route in reach of any page the owner has
+# open. See README, "CORS".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# `/health` is unauthenticated, so its probes are cached briefly rather than
+# letting an anonymous caller drive one dependency round trip per request.
+HEALTH_CACHE_SECONDS = 5.0
+_health_cache: dict = {}
+
 
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
     run_migrations(engine)
-    bootstrap_read_key = os.environ.get("MEMORYGATE_BOOTSTRAP_READ_KEY", "").strip()
-    if bootstrap_read_key:
-        bootstrap_agent_id = os.environ.get("MEMORYGATE_BOOTSTRAP_AGENT_ID", "agent_pi_operator").strip() or "agent_pi_operator"
-        from app.core.db import SessionLocal
+    from app.core.db import SessionLocal
 
-        db = SessionLocal()
-        try:
+    db = SessionLocal()
+    try:
+        # Secure by default, or refuse to start. Raising here stops uvicorn with
+        # the exact fix in the log rather than serving every route openly.
+        key_source = assert_admin_key_configured(db)
+        log.info("Admin key source: %s", key_source)
+        bootstrap_read_key = os.environ.get("MEMORYGATE_BOOTSTRAP_READ_KEY", "").strip()
+        if bootstrap_read_key:
+            bootstrap_agent_id = os.environ.get("MEMORYGATE_BOOTSTRAP_AGENT_ID", "agent_pi_operator").strip() or "agent_pi_operator"
             ensure_bootstrap_agent_access_key(db, bootstrap_read_key, bootstrap_agent_id)
-        finally:
-            db.close()
-    ensure_qdrant_collection()
-    ensure_observation_collection()
-    ensure_entity_collection()
-    get_embedding_model()
-    embed_text("warmup")
+    finally:
+        db.close()
+    # Qdrant and the embedding provider are reported, not required. MemoryGate
+    # serves lexical retrieval without them and says so on every response;
+    # crashing instead would take the whole memory boundary down with the index.
+    for ensure in (ensure_qdrant_collection, ensure_observation_collection, ensure_entity_collection):
+        try:
+            ensure()
+        except Exception:
+            log.warning("Vector index unreachable at startup; collections will be created on first use.")
+            break
+    provider = embedding_health()
+    if provider["status"] != "ok":
+        log.warning("Semantic retrieval is degraded: %s. Falling back to lexical search.", provider["reason"])
+    if CORS_ANY_ORIGIN in CORS_ORIGINS:
+        log.warning(
+            "CORS is set to allow any origin. This is a development override; "
+            "set MEMORYGATE_CORS_ORIGINS to the dashboard origin for normal use."
+        )
     start_worker()
 
 @app.on_event("shutdown")
@@ -74,7 +102,26 @@ def shutdown():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Real dependency probes. Detail stays coarse - this route has no auth."""
+    now = time.monotonic()
+    cached = _health_cache.get("result")
+    if cached and now - _health_cache["checked_at"] < HEALTH_CACHE_SECONDS:
+        return {**cached, "age_seconds": round(now - _health_cache["checked_at"], 1)}
+    dependencies = {
+        "postgres": database_health(),
+        "qdrant": qdrant_health(),
+        "embeddings": embedding_health(),
+    }
+    degraded = sorted(name for name, probe in dependencies.items() if probe["status"] != "ok")
+    result = {
+        "status": "degraded" if degraded else "ok",
+        "service": "memorygate",
+        "degraded": degraded,
+        "dependencies": dependencies,
+    }
+    _health_cache["result"] = result
+    _health_cache["checked_at"] = now
+    return {**result, "age_seconds": 0.0}
 
 @app.get("/auth/check")
 def auth_check(tier: str = Depends(require_key)):

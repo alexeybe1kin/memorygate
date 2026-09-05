@@ -9,7 +9,7 @@ from app.models.object_link import ObjectLink
 from app.models.processing_job import ProcessingJob
 from app.services.classifier import classify_memory
 from app.services.signal_filter import score_value
-from app.services.qdrant_store import upsert_memory_embedding
+from app.services.qdrant_store import index_after_commit, upsert_memory_embedding
 from app.services.ollama_service import analyze_evidence
 from app.services.memory_truth import add_revision, detect_conflicts
 
@@ -88,6 +88,7 @@ def process_evidence(db, evidence: EvidenceObject, content: str, job: Processing
             _link(db, "episode", episode.id, "analysis", ai_analysis.id, "proposed_by", ai_analysis.confidence)
 
         memory = None
+        indexing = {"status": "ok"}
         if value >= 0.3 and len(content.split()) >= 4:
             memory = db.execute(select(Memory).where(Memory.agent_id == evidence.agent_id, Memory.text.ilike(content.strip()))).scalar_one_or_none()
             if not memory:
@@ -101,16 +102,17 @@ def process_evidence(db, evidence: EvidenceObject, content: str, job: Processing
                 db.flush()
                 add_revision(db, memory, "automatic listener promotion", "runtime")
                 detect_conflicts(db, memory)
-                try:
-                    upsert_memory_embedding(memory.id, memory.text, payload={"agent_id": evidence.agent_id, "memory_type": memory.memory_type})
-                except Exception:
-                    pass
+                indexing = index_after_commit(upsert_memory_embedding, memory.id, memory.text, payload={"agent_id": evidence.agent_id, "memory_type": memory.memory_type})
             _link(db, "analysis", analysis.id, "memory", memory.id, "supports", analysis.confidence)
 
         evidence.processing_state = "processed"
         job.status = "completed"
         job.stage = "complete"
         result = {"episode_id": episode.id, "analysis_id": analysis.id, "ai_analysis_id": ai_analysis.id if ai_analysis else None, "memory_id": memory.id if memory else None, "value_score": value}
+        if indexing["status"] != "ok":
+            # A job that promoted a memory the vector index never received is
+            # not a clean success - the owner can see which ones to re-index.
+            result["indexing"] = indexing
         job.result_json = json.dumps(result)
         db.commit()
         return result
