@@ -1,22 +1,38 @@
 """Embedding access, with an honest answer when no provider is available.
 
-MemoryGate previously shipped an `EMBED_MODEL=hash` mode that derived every
+Vectors come from the Embeddings sidecar over HTTP. MemoryGate used to load a
+model inside this process, which tied a web API's startup to a model load and
+made the provider unswappable; behind an HTTP contract the model is a
+deployment choice. See ADR-0004 and ADR-0007 in the Conker repository.
+
+MemoryGate previously also shipped an `EMBED_MODEL=hash` mode that derived every
 vector component from `sha256(f"{index}:{text}")`. That is a hash of the text,
 not a representation of it: near-identical sentences produced uncorrelated
 vectors, so cosine similarity over them was noise. Retrieval looked like it
-worked and silently returned confident nonsense. It has been removed - see
-ADR-0004 in the Conker repository.
+worked and silently returned confident nonsense. It is gone.
 
-There is deliberately no fallback here. When no embedding provider can be
-reached this module raises `EmbeddingUnavailable`, and callers degrade to
+There is deliberately no fallback here. When the sidecar cannot produce a
+vector this module raises `EmbeddingUnavailable`, and callers degrade to
 lexical retrieval *and say so*.
 """
 
+import os
+import time
 from typing import Any
 
-from app.core.config import EMBED_DIMENSION, EMBED_MODEL
+import httpx
 
 REMOVED_HASH_MODEL = "hash"
+
+EMBEDDINGS_URL = os.environ.get("EMBEDDINGS_URL", "http://embeddings-api:8030").rstrip("/")
+EMBEDDINGS_KEY = os.environ.get("EMBEDDINGS_KEY", "")
+_TIMEOUT = float(os.environ.get("EMBEDDINGS_TIMEOUT_SECONDS", "30"))
+
+# A failed probe is cached briefly too: a missing sidecar must not cost a
+# connection attempt on every single retrieval. Short, because the sidecar
+# coming back should be noticed without a restart.
+_PROBE_TTL_SECONDS = 30.0
+_provider: dict[str, Any] = {}
 
 
 class EmbeddingUnavailable(RuntimeError):
@@ -27,61 +43,81 @@ class EmbeddingUnavailable(RuntimeError):
         self.reason = reason
 
 
-# Either {"model": <model>} once a provider has loaded, or {"reason": <str>}
-# once one has failed to. Failures are cached too, so a missing provider does
-# not cost an import attempt on every single retrieval.
-_provider: dict[str, Any] = {}
+def _headers() -> dict[str, str]:
+    return {"X-Embeddings-Key": EMBEDDINGS_KEY} if EMBEDDINGS_KEY else {}
 
 
-def _load_provider() -> dict[str, Any]:
-    if _provider:
+def _probe() -> dict[str, Any]:
+    """Ask the sidecar what it is. Cached, and never raises."""
+    now = time.monotonic()
+    if _provider and now - _provider.get("at", 0.0) < _PROBE_TTL_SECONDS:
         return _provider
-    if EMBED_MODEL == REMOVED_HASH_MODEL:
-        _provider["reason"] = (
-            "EMBED_MODEL=hash was removed: it produced vectors with no semantic "
-            "meaning. Unset EMBED_MODEL or point it at a real model."
-        )
-        return _provider
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        _provider["reason"] = f"embedding provider for {EMBED_MODEL!r} is not installed"
+
+    _provider.clear()
+    _provider["at"] = now
+    if not EMBEDDINGS_KEY:
+        _provider["reason"] = "EMBEDDINGS_KEY is not set, so the embedding sidecar cannot be called"
         return _provider
     try:
-        _provider["model"] = SentenceTransformer(EMBED_MODEL)
-    except Exception:
-        _provider["reason"] = f"embedding model {EMBED_MODEL!r} could not be loaded"
+        response = httpx.get(f"{EMBEDDINGS_URL}/model", headers=_headers(), timeout=5.0)
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:
+        _provider["reason"] = f"embedding sidecar unavailable: {type(exc).__name__}"
+        return _provider
+
+    _provider["model"] = body["model"]
+    _provider["dimension"] = int(body["dimension"])
     return _provider
 
 
-def get_embedding_model() -> Any:
-    """Return the loaded embedding model, or raise `EmbeddingUnavailable`."""
-    provider = _load_provider()
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a batch, or raise `EmbeddingUnavailable`. Never returns noise."""
+    if not texts:
+        return []
+    provider = _probe()
     if "model" not in provider:
         raise EmbeddingUnavailable(provider["reason"])
-    return provider["model"]
+    try:
+        response = httpx.post(
+            f"{EMBEDDINGS_URL}/embed",
+            json={"texts": texts},
+            headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        response.raise_for_status()
+        vectors = response.json()["vectors"]
+    except Exception as exc:
+        # Forget the cached identity. Whatever is wrong, the next caller should
+        # re-probe rather than inherit a stale belief that the sidecar is fine.
+        _provider.clear()
+        raise EmbeddingUnavailable(f"embedding request failed: {type(exc).__name__}") from exc
+
+    if len(vectors) != len(texts):
+        _provider.clear()
+        raise EmbeddingUnavailable("embedding sidecar returned an incomplete batch")
+    return vectors
 
 
 def embed_text(text: str) -> list[float]:
-    """Embed one string, or raise `EmbeddingUnavailable`. Never returns noise."""
-    model = get_embedding_model()
-    vec = model.encode(text, normalize_embeddings=True)
-    return [float(x) for x in vec.tolist()]
+    """Embed one string, or raise `EmbeddingUnavailable`."""
+    return embed_texts([text])[0]
+
+
+def provider_dimension() -> int | None:
+    """The sidecar's vector width, or None if it cannot be reached."""
+    provider = _probe()
+    return provider.get("dimension")
 
 
 def embedding_health() -> dict:
     """Coarse provider status for `/health`. Never raises, never guesses."""
-    provider = _load_provider()
+    provider = _probe()
     if "model" in provider:
-        return {"status": "ok", "model": EMBED_MODEL, "dimension": EMBED_DIMENSION}
-    return {
-        "status": "unavailable",
-        "model": EMBED_MODEL,
-        "dimension": EMBED_DIMENSION,
-        "reason": provider["reason"],
-    }
+        return {"status": "ok", "model": provider["model"], "dimension": provider["dimension"]}
+    return {"status": "unavailable", "reason": provider["reason"]}
 
 
 def reset_provider_cache() -> None:
-    """Forget a cached provider result, so a test can re-probe after reconfiguring."""
+    """Forget a cached probe, so a test can re-probe after reconfiguring."""
     _provider.clear()

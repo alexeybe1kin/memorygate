@@ -8,8 +8,12 @@ DATABASE_URL = os.getenv(
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "memories")
 
-EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-EMBED_DIMENSION = int(os.getenv("EMBED_DIMENSION", "384"))
+# The vector width the Qdrant collection is built at. It must match what the
+# Embeddings sidecar serves - a mismatch writes vectors into an index of the
+# wrong shape, which surfaces later as bad search results rather than an
+# error. Startup compares the two and says so when they disagree.
+# Default is Qwen3-Embedding-0.6B, the sidecar default. See ADR-0004.
+EMBED_DIMENSION = int(os.getenv("EMBED_DIMENSION", "1024"))
 
 MEMORYGATE_ADMIN_KEY = os.getenv("MEMORYGATE_ADMIN_KEY", "")
 

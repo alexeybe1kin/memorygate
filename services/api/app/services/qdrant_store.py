@@ -62,13 +62,43 @@ def reset_ensured_collections() -> None:
     _ensured.clear()
 
 
+DIMENSION_MISMATCH = "collection vector width does not match the embedding model"
+
+
 def qdrant_health() -> dict:
-    """Coarse reachability probe for the vector index. Never raises."""
+    """Reachability, and whether the index can hold what we now produce.
+
+    Reachability alone is not enough. A collection built at one vector width
+    cannot accept vectors of another, so an index that is up but shaped for a
+    previous model is unusable - and calling it `ok` because the connection
+    succeeded is the same confident wrongness this service has been carrying
+    elsewhere. Changing the embedding model means rebuilding the collections.
+    """
     try:
-        get_qdrant_client().get_collections()
-        return {"status": "ok"}
+        client = get_qdrant_client()
+        existing = {c.name for c in client.get_collections().collections}
     except Exception:
         return {"status": "unavailable", "reason": INDEX_UNREACHABLE}
+
+    mismatched = []
+    for name in (QDRANT_COLLECTION, OBSERVATION_COLLECTION, ENTITY_COLLECTION):
+        if name not in existing:
+            continue  # created on first use, at the current dimension
+        try:
+            size = getattr(client.get_collection(name).config.params.vectors, "size", None)
+        except Exception:
+            continue  # reachability is already answered above; do not guess
+        if size is not None and size != EMBED_DIMENSION:
+            mismatched.append(f"{name}={size}")
+
+    if mismatched:
+        return {
+            "status": "degraded",
+            "reason": DIMENSION_MISMATCH,
+            "expected_dimension": EMBED_DIMENSION,
+            "collections": sorted(mismatched),
+        }
+    return {"status": "ok"}
 
 
 def semantic_status() -> dict:

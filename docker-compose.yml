@@ -49,6 +49,11 @@ services:
       DATABASE_URL: postgresql+psycopg://memorygate:memorygate_dev_password@postgres:5432/memorygate
       QDRANT_URL: http://qdrant:6333
       OLLAMA_URL: http://ollama:11434
+      # Vectors come from the Embeddings sidecar, which runs from its own repo
+      # and its own compose file on the shared conker_net. Without EMBEDDINGS_KEY
+      # in .env, semantic retrieval reports degraded and search falls back to
+      # the lexical path - which is the honest failure, not a silent one.
+      EMBEDDINGS_URL: http://embeddings-api:8030
     env_file:
       - path: .env
         required: false

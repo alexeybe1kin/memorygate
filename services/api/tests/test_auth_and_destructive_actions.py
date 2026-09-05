@@ -55,8 +55,13 @@ def session(tmp_path, monkeypatch):
 
 @pytest.fixture
 def no_semantic_retrieval(monkeypatch):
-    """No embedding provider, and a vector index that really refuses connections."""
-    monkeypatch.setattr(embeddings, "EMBED_MODEL", embeddings.REMOVED_HASH_MODEL)
+    """No embedding provider, and a vector index that really refuses connections.
+
+    The sidecar is pointed at a genuinely closed port rather than mocked, so it
+    fails the way an absent sidecar fails in production.
+    """
+    monkeypatch.setattr(embeddings, "EMBEDDINGS_URL", f"http://127.0.0.1:{_closed_port()}")
+    monkeypatch.setattr(embeddings, "EMBEDDINGS_KEY", "unused-but-set")
     embeddings.reset_provider_cache()
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", f"http://127.0.0.1:{_closed_port()}")
     qdrant_store.get_qdrant_client.cache_clear()
