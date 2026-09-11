@@ -50,6 +50,7 @@ def get_runtime_status(db) -> dict:
         "provider": config["provider"],
         "model": config["model"],
         "api_key_configured": bool(config["api_key"]),
+        "generation_status": "blocked_budget" if config["provider"] == "openai" else "local",
     }
 
 

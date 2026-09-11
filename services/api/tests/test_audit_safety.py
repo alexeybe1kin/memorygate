@@ -1,0 +1,48 @@
+import json
+import time
+
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+
+from app.core.db import Base
+from app.models.audit import MemoryAudit
+from app.services import ollama_service
+
+
+@pytest.fixture
+def sessions(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'memory.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine)
+    monkeypatch.setattr(ollama_service, "SessionLocal", factory)
+    monkeypatch.setattr(ollama_service, "get_runtime_config", lambda db: {
+        "provider": "openai", "model": "hosted-test", "api_key": "never-send-this"})
+    monkeypatch.delenv("MEMORYGATE_HOSTED_COST_QUOTE", raising=False)
+    yield factory
+    engine.dispose()
+
+
+def test_unbudgeted_hosted_generation_never_dispatches_and_records_unknown_cost(sessions, monkeypatch):
+    monkeypatch.setattr(ollama_service.httpx, "Client", lambda **kw: pytest.fail("unbudgeted hosted dispatch"))
+    assert ollama_service._generate("system", "private-evidence", 160) is None
+    with sessions() as db:
+        decision = json.loads(db.scalars(select(MemoryAudit)).one().payload_json)
+    assert decision["dispatched"] is False
+    assert decision["reason"] == "HOSTED_BUDGET_UNAVAILABLE"
+    assert decision["quote"]["upper_bound_microusd"] is None
+    assert "private-evidence" not in json.dumps(decision)
+    assert "never-send-this" not in json.dumps(decision)
+
+
+def test_cost_quote_is_recorded_but_does_not_authorize_spending(sessions, monkeypatch):
+    monkeypatch.setenv("MEMORYGATE_HOSTED_COST_QUOTE", json.dumps({
+        "model": "hosted-test", "valid_until": time.time()+60, "source": "https://provider.example/prices",
+        "input_token_ceiling": 1000, "input_per_million_microusd": 1000000,
+        "output_per_million_microusd": 2000000}))
+    monkeypatch.setattr(ollama_service.httpx, "Client", lambda **kw: pytest.fail("estimate is not authorization"))
+    assert ollama_service._generate("system", "private", 160) is None
+    with sessions() as db:
+        decision = json.loads(db.scalars(select(MemoryAudit)).one().payload_json)
+    assert decision["quote"]["upper_bound_microusd"] == 1320
+    assert decision["quote"]["status"] == "owner_supplied_estimate"

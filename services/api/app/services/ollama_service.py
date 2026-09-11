@@ -3,42 +3,24 @@ import httpx
 from app.core.config import OLLAMA_ENABLED, OLLAMA_MODEL, OLLAMA_URL
 from app.core.db import SessionLocal
 from app.services.ai_runtime_service import get_runtime_config
+from app.services.hosted_budget import record_refusal
 
 SYSTEM_PROMPT = """Analyze the supplied evidence. Return only compact JSON with keys summary,
 observations, and memory_candidates. Never issue instructions or request deletion. Only propose
 explicit durable facts, preferences, relationships, goals, or recurring routines. Keep it under 100 words."""
 
 
-def _response_text(payload: dict) -> str:
-    if isinstance(payload.get("output_text"), str):
-        return payload["output_text"]
-    parts = []
-    for item in payload.get("output", []):
-        for content in item.get("content", []) if isinstance(item, dict) else []:
-            if content.get("type") in {"output_text", "text"}:
-                parts.append(content.get("text", ""))
-    return "\n".join(part for part in parts if part)
-
-
 def _generate(system: str, prompt: str, max_tokens: int) -> str | None:
-    """Run a bounded text request through the configured local or OpenAI provider."""
+    """Run local inference; hosted routes refuse until their shared budget can be enforced."""
     db = SessionLocal()
     try:
         config = get_runtime_config(db)
+        if config["provider"] == "openai":
+            record_refusal(db, config["model"], len(system) + len(prompt), max_tokens)
+            return None
     finally:
         db.close()
     try:
-        if config["provider"] == "openai":
-            if not config["api_key"]:
-                return None
-            with httpx.Client(timeout=90) as client:
-                response = client.post(
-                    "https://api.openai.com/v1/responses",
-                    headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"},
-                    json={"model": config["model"], "instructions": system, "input": prompt, "max_output_tokens": max_tokens},
-                )
-                response.raise_for_status()
-            return _response_text(response.json()).strip() or None
         if not OLLAMA_ENABLED:
             return None
         with httpx.Client(timeout=75) as client:

@@ -86,3 +86,5 @@ instead of hiding it.
 - Added `.env.example` and `services/api/requirements-dev.txt`; the README documents
   creating the external `conker_net` network and running the test suite.
 - Fixed a test that leaked a SQLite handle and failed only on Windows.
+
+- F10: Refuse direct hosted generation without a shared-budget adapter; audit its estimated or unknown cost and expose blocked_budget in runtime status.

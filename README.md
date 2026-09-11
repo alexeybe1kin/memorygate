@@ -319,3 +319,10 @@ integrations/          Read-only agent skill and MCP configuration
 - Do not expose the dashboard/API directly to the public internet. Put them behind a private network, VPN, or authenticated reverse proxy when leaving localhost.
 - Backups are logical exports, not an encrypted disaster-recovery system. Protect the Docker volume and copy important backups to secure storage.
 - MemoryGate can preserve evidence and history, but no automated system can guarantee a fact is true. Confidence, provenance, and review remain part of the design.
+
+Direct OpenAI generation is refused until it has a durable shared-budget adapter.
+Refusals appear in the owner audit as `hosted_generation_refused`, without prompt text.
+Optional `MEMORYGATE_HOSTED_COST_QUOTE` JSON records an owner-supplied estimate:
+`model`, `valid_until` (Unix seconds), HTTPS `source`, `input_token_ceiling`,
+`input_per_million_microusd`, `output_per_million_microusd`. Without a current quote,
+cost is explicitly unknown. An estimate never enables spending; choose local Ollama.

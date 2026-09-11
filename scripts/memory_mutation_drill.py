@@ -84,6 +84,14 @@ CASES = [
     ),
 ]
 SOURCE = "services/api/app"
+CASES.extend([
+    ("unbudgeted-hosted-dispatch", "services/api/app/services/ollama_service.py",
+     '            record_refusal(db, config["model"], len(system) + len(prompt), max_tokens)\n            return None',
+     '            record_refusal(db, config["model"], len(system) + len(prompt), max_tokens)\n            httpx.Client(timeout=90)\n            return None'),
+    ("refused-cost-audit-lost", "services/api/app/services/hosted_budget.py",
+     '    db.commit()', '    db.rollback()'),
+])
+SAFETY_TEST = "services/api/tests/test_audit_safety.py"
 TEST = "services/api/tests/test_conversation_memory.py"
 BOOTSTRAP_TEST = "services/api/tests/test_bootstrap_revocation.py"
 IMPORT = "services/api"
@@ -102,6 +110,7 @@ def main():
         (target / TEST).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / TEST, target / TEST)
         shutil.copyfile(ROOT / BOOTSTRAP_TEST, target / BOOTSTRAP_TEST)
+        shutil.copyfile(ROOT / SAFETY_TEST, target / SAFETY_TEST)
         if filename:
             file = target / filename
             source = file.read_text(encoding="utf-8")
@@ -120,6 +129,7 @@ def main():
                 "pytest",
                 TEST,
                 BOOTSTRAP_TEST,
+                SAFETY_TEST,
                 "-q",
                 "-p",
                 "no:cacheprovider",
