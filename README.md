@@ -1,5 +1,8 @@
 # MemoryGate
 
+[Pi conversation memory: admission, retries, forgetting and bilingual drills](docs/conversation-memory.md).
+
+
 MemoryGate is a local-first memory service for one personal AI agent. It receives evidence, preserves lineage, turns durable signals into structured memory, and returns a bounded context package that an agent can use without direct database access.
 
 It is deliberately not a general chatbot, autonomous executor, or replacement for your main agent. MemoryGate stores, retrieves, and explains knowledge. Your agent remains responsible for reasoning and action.

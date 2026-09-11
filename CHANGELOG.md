@@ -4,6 +4,18 @@ Versions are the module's own, not an API revision. A change to the shape of any
 endpoint is a contract change and gets its own entry - replacing a module has to be
 a decision with visible consequences.
 
+## Unreleased
+
+- Add scoped, idempotent Pi conversation ingestion with atomic source/analysis/memory
+  lineage, durable deletion tombstones and retryable vector work.
+- Admit ordinary Russian preferences at the same threshold as English, including
+  short statements; preserve source attribution, dates and uncertainty in context.
+- Follow direct conversation lineage on source invalidation; unsupported memories
+  leave active retrieval. Flush changed support links before checking remaining support.
+- Include conversation receipts in logical backups and expose index lag in retrieval.
+
+
+
 ## 0.2.0
 
 Two defects made MemoryGate untrustworthy in opposite directions: it authenticated

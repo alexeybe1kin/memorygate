@@ -177,6 +177,9 @@ def search_memory_embeddings(query: str, limit: int = 20, agent_id: str | None =
 
 def delete_memory_embedding(memory_id: str) -> None:
     client = get_qdrant_client()
+    # Forgetting before the first successful vector write is already satisfied.
+    if QDRANT_COLLECTION not in {collection.name for collection in client.get_collections().collections}:
+        return
     client.delete(collection_name=QDRANT_COLLECTION, points_selector=[memory_id])
 
 

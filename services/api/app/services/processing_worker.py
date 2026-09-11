@@ -1,12 +1,12 @@
 import json
 import threading
-import time
 from sqlalchemy import select
 from app.core.config import PROCESSING_POLL_SECONDS
 from app.core.db import SessionLocal
 from app.models.evidence_object import EvidenceObject
 from app.models.processing_job import ProcessingJob
 from app.services.runtime_pipeline import process_evidence
+from app.services.conversation_memory import index_pending
 
 _stop = threading.Event()
 _thread: threading.Thread | None = None
@@ -30,6 +30,11 @@ def _run() -> None:
             db.rollback()
         finally:
             db.close()
+        try:
+            index_pending()
+        except Exception:
+            # Pending rows survive worker/database failure and are retried next poll.
+            pass
         _stop.wait(PROCESSING_POLL_SECONDS)
 
 

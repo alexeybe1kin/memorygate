@@ -1,0 +1,141 @@
+"""Break each guarantee in an isolated copy; collection errors never count as a catch."""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CASES = [
+    (
+        "russian-discarded",
+        "services/api/app/services/signal_filter.py",
+        "or re.search(russian, lower)",
+        "or False",
+    ),
+    (
+        "short-statements-discarded",
+        "services/api/app/services/runtime_pipeline.py",
+        "if value >= 0.3:",
+        "if value >= 0.3 and len(content.split()) >= 4:",
+    ),
+    (
+        "duplicate-delivery",
+        "services/api/app/services/conversation_memory.py",
+        "if receipt.fingerprint:",
+        "if False:",
+    ),
+    (
+        "resurrect-forgotten-evidence",
+        "services/api/app/services/conversation_memory.py",
+        'if receipt.state == "deleted":',
+        "if False:",
+    ),
+    (
+        "partial-evidence-commit",
+        "services/api/app/services/conversation_memory.py",
+        "db.add(evidence)",
+        "db.add(evidence); db.commit()",
+    ),
+    (
+        "lost-index-retry",
+        "services/api/app/services/conversation_memory.py",
+        "receipt.index_next_at = time.time() + 30",
+        'receipt.index_pending = "none"',
+    ),
+    (
+        "unscoped-ingestion",
+        "services/api/app/routes/conversation.py",
+        "if len(expected) < 16 or not key or not secrets.compare_digest(expected, key):",
+        "if False:",
+    ),
+    (
+        "backup-loses-tombstones",
+        "services/api/app/services/backup_service.py",
+        "MemoryRevision, MemoryConflict, ConversationReceipt)",
+        "MemoryRevision, MemoryConflict)",
+    ),
+    (
+        "invalid-source-still-recalled",
+        "services/api/app/routes/runtime.py",
+        'memory.source_type in {"automatic_listener", "owner_statement"}',
+        'memory.source_type == "automatic_listener"',
+    ),
+]
+SOURCE = "services/api/app"
+TEST = "services/api/tests/test_conversation_memory.py"
+IMPORT = "services/api"
+SCRATCH = ".test-runs"
+
+
+def main():
+    scratch = ROOT / SCRATCH
+    scratch.mkdir(exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="memory-mutations-", dir=scratch))
+    for name, filename, old, new in [("baseline", None, None, None), *CASES]:
+        target = run / name
+        shutil.copytree(
+            ROOT / SOURCE, target / SOURCE, ignore=shutil.ignore_patterns("__pycache__")
+        )
+        (target / TEST).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / TEST, target / TEST)
+        if filename:
+            file = target / filename
+            source = file.read_text(encoding="utf-8")
+            if source.count(old) != 1:
+                raise RuntimeError(
+                    f"Mutant {name} no longer matches exactly one site; update the drill"
+                )
+            file.write_text(source.replace(old, new), encoding="utf-8")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(target / IMPORT) + os.pathsep + env.get("PYTHONPATH", "")
+        report = target / "results.xml"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                TEST,
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "--basetemp",
+                str(target / "temp"),
+                "--junitxml",
+                str(report),
+            ],
+            cwd=target,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        (target / "output.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
+        suites = ET.parse(report).getroot().iter("testsuite") if report.exists() else []
+        suites = list(suites)
+        failed = sum(int(suite.get("failures", 0)) for suite in suites)
+        errors = sum(int(suite.get("errors", 0)) for suite in suites)
+        skipped = sum(int(suite.get("skipped", 0)) for suite in suites)
+        valid = (
+            bool(suites)
+            and not errors
+            and not skipped
+            and (
+                result.returncode == 0
+                if name == "baseline"
+                else result.returncode == 1 and failed > 0
+            )
+        )
+        if not valid:
+            print(f"FAILED: {name}; inspect {target / 'output.txt'}")
+            return 1
+        print(f"{name}: {'passed' if name == 'baseline' else 'caught'}", flush=True)
+    print(f"All {len(CASES)} mutants caught. Evidence: {run}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

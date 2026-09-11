@@ -21,6 +21,7 @@ from app.routes.auth_settings import router as auth_settings_router
 from app.routes.evidence import router as evidence_router
 from app.routes.lineage import router as lineage_router
 from app.routes.runtime import router as runtime_router
+from app.routes.conversation import router as conversation_router
 from app.routes.system import router as system_router
 from app.routes.skills import context_router as skills_context_router
 from app.routes.skills import router as skills_router
@@ -147,6 +148,7 @@ app.include_router(auth_settings_router, dependencies=_auth)
 app.include_router(evidence_router, dependencies=_auth)
 app.include_router(lineage_router, dependencies=_auth)
 app.include_router(runtime_router)
+app.include_router(conversation_router)
 app.include_router(system_router, dependencies=_auth)
 app.include_router(memory_router, dependencies=_auth)
 app.include_router(skills_router, dependencies=_auth)

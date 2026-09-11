@@ -89,7 +89,7 @@ def process_evidence(db, evidence: EvidenceObject, content: str, job: Processing
 
         memory = None
         indexing = {"status": "ok"}
-        if value >= 0.3 and len(content.split()) >= 4:
+        if value >= 0.3:
             memory = db.execute(select(Memory).where(Memory.agent_id == evidence.agent_id, Memory.text.ilike(content.strip()))).scalar_one_or_none()
             if not memory:
                 memory = Memory(

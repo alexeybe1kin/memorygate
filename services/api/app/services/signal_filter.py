@@ -9,12 +9,17 @@ Two independent scores decide whether a write proceeds:
   score in [0, 1], compared against the agent's configured `value_threshold`.
 """
 
+import re
+import unicodedata
+
 ACKNOWLEDGMENTS = {
     "ok", "okay", "yes", "no", "thanks", "thank you", "sure", "got it",
     "cool", "fine", "alright", "k", "yep", "nope", "kk",
+    "да", "нет", "ок", "окей", "ага", "угу", "спасибо", "понятно", "хорошо",
 }
 
 PREFERENCE_WORDS = ["prefer", "always", "never", "i like", "i hate", "i want", "i decided", "i chose", "favorite", "i love"]
+PREFERENCE_WORDS += ["prefers", "preferred", "preferring", "preference", "preferences", "favourite"]
 BEHAVIORAL_WORDS = [
     "every time", "whenever", "tends to", "usually", "habit", "pattern of",
     "keep doing", "can't stop", "cant stop", "again", "relapse", "spiraling",
@@ -27,32 +32,33 @@ NEGATION_WORDS = ["not", "no longer", "stopped", "don't", "never"]
 HIGH_VALUE_WEIGHT = 0.3
 
 
+RUSSIAN_SIGNALS = (
+    r"\b(?:предпоч(?:ита\w*|тени\w*|ел|ла|ли)|люблю|нравится|нравятся|хочу|решил[аи]?|выбрал[аи]?|любим\w*)\b|\bмне\s+удобнее\b",
+    r"\b(?:обычно|привыч\w*|снова|каждый|каждую|всегда|никогда)\b|\bкаждый\s+раз\b",
+    r"\b(?:мой|моя|мои)\s+(?:друг\w*|подруг\w*|партнер\w*|мам\w*|пап\w*|сестр\w*|брат\w*|муж\w*|жен\w*)\b|\b(?:работаю|живу)\b",
+    r"\b(?:цель|цели|нужно|надо|должен|должна|срок|дедлайн|планирую|стараюсь)\b",
+)
+
+
+def _normalized(text: str) -> str:
+    return unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+
+
+def _contains(text: str, phrases: list[str]) -> bool:
+    # Word boundaries avoid signals such as 'again' inside 'against'.
+    return any(re.search(r"(?<!\w)" + re.escape(p) + r"s?(?!\w)", text) for p in phrases)
+
+
 def score_value(text: str, existing_similar_text: str | None = None) -> float:
-    stripped = text.strip().lower().rstrip(".!")
-    if stripped in ACKNOWLEDGMENTS:
+    lower = _normalized(text).strip()
+    if lower.rstrip(".!? ") in ACKNOWLEDGMENTS:
         return 0.0
-
-    words = text.strip().split()
-    lower = text.lower()
-
-    score = 0.0
-    if any(w in lower for w in PREFERENCE_WORDS):
+    groups = (PREFERENCE_WORDS, BEHAVIORAL_WORDS, RELATIONSHIP_WORDS, GOAL_WORDS)
+    score = sum(HIGH_VALUE_WEIGHT for phrases, russian in zip(groups, RUSSIAN_SIGNALS)
+                if _contains(lower, phrases) or re.search(russian, lower))
+    negations = NEGATION_WORDS + ["не", "больше не", "перестал", "перестала"]
+    if existing_similar_text and _contains(lower, negations) and not _contains(_normalized(existing_similar_text), negations):
         score += HIGH_VALUE_WEIGHT
-    if any(w in lower for w in BEHAVIORAL_WORDS):
-        score += HIGH_VALUE_WEIGHT
-    if any(w in lower for w in RELATIONSHIP_WORDS):
-        score += HIGH_VALUE_WEIGHT
-    if any(w in lower for w in GOAL_WORDS):
-        score += HIGH_VALUE_WEIGHT
-
-    if existing_similar_text and any(w in lower for w in NEGATION_WORDS):
-        existing_lower = existing_similar_text.lower()
-        if not any(w in existing_lower for w in NEGATION_WORDS):
-            score += HIGH_VALUE_WEIGHT
-
-    if score == 0.0 and len(words) < 4:
-        return 0.0
-
     return min(score, 1.0)
 
 

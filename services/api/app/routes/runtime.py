@@ -2,7 +2,7 @@ import json
 import hmac
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from app.core.agent import get_agent_id, resolve_agent_id
 from app.core.auth import require_key, require_read_key
 from app.services.auth_settings_service import clear_failed_attempts, get_lockout_status, register_failed_attempt
@@ -13,6 +13,7 @@ from app.models.evidence_object import EvidenceObject
 from app.models.evidence_source import EvidenceSource
 from app.models.audit import MemoryAudit
 from app.models.memory import Memory
+from app.models.conversation_receipt import ConversationReceipt
 from app.models.object_link import ObjectLink
 from app.models.processing_job import ProcessingJob
 from app.schemas.runtime import AgentContextRequest, IngestEventRequest, MemoryQuestionRequest
@@ -21,6 +22,7 @@ from app.services.qdrant_store import INDEX_UNREACHABLE, search_memory_embedding
 from app.services.ollama_service import answer_with_context, ollama_health
 from app.services.scoring import memory_rank_bonus
 from app.services.memory_truth import mark_unsupported
+from app.services.conversation_memory import citations
 
 router = APIRouter(prefix="/runtime", tags=["runtime"])
 
@@ -117,7 +119,9 @@ def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
                     if row and row.agent_id == agent_id and row.status == "active":
                         score = hit["score"] + memory_rank_bonus(row.memory_type, row.confidence)
                         memories.append({"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
-                                         "confidence": row.confidence, "score": round(score, 4), "source_type": row.source_type,
+                                         "confidence": row.confidence, "do_not_generalize": row.do_not_generalize,
+                                         "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+                                         "score": round(score, 4), "source_type": row.source_type,
                                          "retrieval_path": "semantic"})
             except Exception:
                 retrieval = {"status": "degraded", "component": "vector_index", "reason": INDEX_UNREACHABLE}
@@ -125,7 +129,9 @@ def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
         if retrieval["status"] != "ok":
             rows = db.execute(select(Memory).where(Memory.agent_id == agent_id, Memory.status == "active", Memory.text.ilike(f"%{payload.query}%")).limit(payload.max_items)).scalars().all()
             memories = [{"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
-                         "confidence": row.confidence, "score": memory_rank_bonus(row.memory_type, row.confidence), "source_type": row.source_type,
+                         "confidence": row.confidence, "do_not_generalize": row.do_not_generalize,
+                         "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+                         "score": memory_rank_bonus(row.memory_type, row.confidence), "source_type": row.source_type,
                          "retrieval_path": "lexical"} for row in rows]
         # Vector similarity is useful but must not hide an exact project/name
         # match. Add lexical candidates so retrieval is robust during early or
@@ -139,9 +145,12 @@ def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
             matches = sum(1 for term in query_terms if term in text)
             if matches:
                 memories.append({"id": row.id, "text": row.text, "summary": row.summary, "type": row.memory_type,
-                                 "confidence": row.confidence, "score": round(memory_rank_bonus(row.memory_type, row.confidence) + matches * 0.3, 4),
+                                 "confidence": row.confidence, "do_not_generalize": row.do_not_generalize,
+                                 "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+                                 "score": round(memory_rank_bonus(row.memory_type, row.confidence) + matches * 0.3, 4),
                                  "source_type": row.source_type, "retrieval_path": "lexical"})
         memories.sort(key=lambda item: item["score"], reverse=True)
+        citations(db, memories, agent_id)
 
         terms = [term for term in payload.query.split() if len(term) > 2][:8]
         entity_filter = or_(*[or_(Entity.name.ilike(f"%{term}%"), Entity.description.ilike(f"%{term}%"), Entity.agent_summary.ilike(f"%{term}%")) for term in terms]) if terms else Entity.name.ilike(f"%{payload.query}%")
@@ -163,7 +172,9 @@ def _build_context(db, payload: AgentContextRequest, agent_id: str) -> dict:
             )
         return {
             "query": payload.query, "agent_id": agent_id, "briefing": build_briefing(db, agent_id),
-            "retrieval": {"mode": "hybrid" if retrieval["status"] == "ok" else "lexical", "semantic": retrieval},
+            "retrieval": {"mode": "hybrid" if retrieval["status"] == "ok" else "lexical", "semantic": retrieval,
+                "pending_conversation_index": db.scalar(select(func.count()).select_from(ConversationReceipt).where(
+                    ConversationReceipt.agent_id == agent_id, ConversationReceipt.index_pending != "none"))},
             "memories": memories[:payload.max_items],
             "entities": [{"id": r.id, "name": r.name, "type": r.entity_type, "description": r.description, "summary": r.agent_summary, "attributes": json.loads(r.attributes_json)} for r in entities],
             "episodes": [{"id": r.id, "title": r.title, "summary": r.summary, "occurred_start": r.occurred_start.isoformat() if r.occurred_start else None} for r in episodes],
@@ -284,6 +295,9 @@ def invalidate_evidence(evidence_id: str, reason: str, agent_id: str = Depends(g
         episode_ids = [link.target_id for link in links if link.target_type == "episode"]
         analysis_links = db.execute(select(ObjectLink).where(ObjectLink.source_type == "episode", ObjectLink.source_id.in_(episode_ids), ObjectLink.target_type == "analysis")).scalars().all() if episode_ids else []
         affected_analysis_ids = [link.target_id for link in analysis_links]
+        # Conversation evidence supports its admission analysis directly; it
+        # has no inferred episode between the owner's words and the claim.
+        affected_analysis_ids.extend(link.target_id for link in links if link.target_type == "analysis")
         affected_memories = []
         if affected_analysis_ids:
             memory_links = db.execute(select(ObjectLink).where(ObjectLink.source_type == "analysis", ObjectLink.source_id.in_(affected_analysis_ids), ObjectLink.target_type == "memory")).scalars().all()
@@ -291,7 +305,8 @@ def invalidate_evidence(evidence_id: str, reason: str, agent_id: str = Depends(g
                 memory_link.confidence = 0.0
                 memory_link.metadata_json = json.dumps({"invalidated": True, "reason": reason, "via": evidence_id})
                 memory = db.get(Memory, memory_link.target_id)
-                if memory and memory.source_type == "automatic_listener":
+                if memory and memory.source_type in {"automatic_listener", "owner_statement"}:
+                    db.flush()
                     active_support = db.execute(select(ObjectLink).where(ObjectLink.target_type == "memory", ObjectLink.target_id == memory.id, ObjectLink.relationship == "supports", ObjectLink.confidence > 0)).scalars().all()
                     if not active_support:
                         mark_unsupported(db, memory, f"all evidence support invalidated: {reason}")
