@@ -17,7 +17,8 @@ def record_refusal(db, model: str, input_chars: int, max_tokens: int) -> dict:
             raise ValueError("Quote is not current for this model")
         total = (supplied["input_token_ceiling"] * supplied["input_per_million_microusd"]
                  + max_tokens * supplied["output_per_million_microusd"] + 999999) // 1000000
-        quote = {"status": "owner_supplied_estimate", "upper_bound_microusd": total, **supplied}
+        quote = {name: supplied[name] for name in ("model", "valid_until", "source", *names)}
+        quote.update(status="owner_supplied_estimate", upper_bound_microusd=total)
     except (KeyError, TypeError, ValueError):
         quote["reason"] = "No current model-specific prices and input ceiling supplied; cost is unknown"
     decision = {"provider": "openai", "model": model, "input_chars": input_chars,

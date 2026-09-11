@@ -105,6 +105,11 @@ CASES.extend([
     ("cryptography-pin-before-pkcs7-fix", "services/api/requirements.txt",
      'cryptography==50.0.0', 'cryptography==46.0.1'),
 ])
+CASES.extend([
+    ("quote-overwrites-calculated-cost", "services/api/app/services/hosted_budget.py",
+     'quote.update(status="owner_supplied_estimate", upper_bound_microusd=total)',
+     'quote.update(supplied)'),
+])
 SAFETY_TEST = "services/api/tests/test_audit_safety.py"
 TEST = "services/api/tests/test_conversation_memory.py"
 BOOTSTRAP_TEST = "services/api/tests/test_bootstrap_revocation.py"

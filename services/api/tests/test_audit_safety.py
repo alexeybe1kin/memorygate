@@ -39,7 +39,7 @@ def test_cost_quote_is_recorded_but_does_not_authorize_spending(sessions, monkey
     monkeypatch.setenv("MEMORYGATE_HOSTED_COST_QUOTE", json.dumps({
         "model": "hosted-test", "valid_until": time.time()+60, "source": "https://provider.example/prices",
         "input_token_ceiling": 1000, "input_per_million_microusd": 1000000,
-        "output_per_million_microusd": 2000000}))
+        "output_per_million_microusd": 2000000, "status": "free", "upper_bound_microusd": 0}))
     monkeypatch.setattr(ollama_service.httpx, "Client", lambda **kw: pytest.fail("estimate is not authorization"))
     assert ollama_service._generate("system", "private", 160) is None
     with sessions() as db:
