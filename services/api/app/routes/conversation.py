@@ -5,9 +5,35 @@ import secrets
 
 from app.services import conversation_memory
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/runtime/conversation", tags=["conversation evidence"])
+MAX_CONTENT_CHARACTERS = 16000
+
+
+class ConversationRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def bounded(request):
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                if any(error["loc"] == ("body", "content") and error["type"] == "string_too_long"
+                       for error in exc.errors()):
+                    return JSONResponse(status_code=413, content={"detail": {
+                        "code": "CONTENT_TOO_LARGE", "retryable": False,
+                        "max_content_characters": MAX_CONTENT_CHARACTERS,
+                        "message": "Content exceeds the permanent ingestion limit; do not retry this payload",
+                        "next_action": "Keep the original transcript and send a bounded memory payload",
+                    }})
+                raise
+        return bounded
+
+
+router = APIRouter(prefix="/runtime/conversation", tags=["conversation evidence"], route_class=ConversationRoute)
 
 
 def require_conversation_key(
@@ -31,11 +57,11 @@ def require_conversation_key(
 class ConversationEvidence(BaseModel):
     model_config = {"extra": "forbid"}
     session_id: str = Field(pattern=r"^ses_[A-Za-z0-9_-]+$", max_length=100)
-    content: str = Field(min_length=1, max_length=16000)
+    content: str = Field(min_length=1, max_length=MAX_CONTENT_CHARACTERS)
     created_at: float = Field(ge=0, le=4102444800)
 
 
-@router.put("/{message_id}")
+@router.put("/{message_id}", responses={413: {"description": "Permanent CONTENT_TOO_LARGE; retryable=false; max_content_characters=16000"}})
 def ingest(
     message_id: str,
     payload: ConversationEvidence,

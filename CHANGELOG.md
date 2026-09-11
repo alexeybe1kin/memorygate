@@ -90,3 +90,5 @@ instead of hiding it.
 - F10: Refuse direct hosted generation without a shared-budget adapter; audit its estimated or unknown cost and expose blocked_budget in runtime status.
 
 - F7: Report unverified Qdrant collections as degraded with the collection and failure class.
+
+- F8: Return a content-free, permanent HTTP 413 error for oversized conversation ingestion; exactly 16,000 characters still works.

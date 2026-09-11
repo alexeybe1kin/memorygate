@@ -66,3 +66,30 @@ def test_failed_collection_inspection_is_never_healthy(monkeypatch, mode):
     assert report["status"] == "degraded"
     assert store.QDRANT_COLLECTION in report["reason"]
     assert ("RuntimeError" if mode == "exception" else "unknown vector dimension") in report["reason"]
+
+
+def test_oversized_ingestion_is_permanent_without_echoing_content(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.routes import conversation
+
+    monkeypatch.setenv("MEMORYGATE_CONVERSATION_KEY", "test-conversation-secret")
+    calls = []
+    monkeypatch.setattr(conversation.conversation_memory, "ingest", lambda *args: calls.append(args) or {"status": "accepted"})
+    app = FastAPI()
+    app.include_router(conversation.router)
+    client = TestClient(app)
+    body = {"session_id": "ses_one", "content": "x"*16001, "created_at": 1000}
+    response = client.put("/runtime/conversation/msg_one", json=body,
+                          headers={"X-MemoryGate-Conversation-Key": "test-conversation-secret"})
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "CONTENT_TOO_LARGE"
+    assert response.json()["detail"]["retryable"] is False
+    assert response.json()["detail"]["max_content_characters"] == 16000
+    assert "x"*100 not in response.text
+    assert calls == []
+    body["content"] = "x"*16000
+    assert client.put("/runtime/conversation/msg_one", json=body,
+                      headers={"X-MemoryGate-Conversation-Key": "test-conversation-secret"}).status_code == 200
+    assert len(calls) == 1
+    client.close()

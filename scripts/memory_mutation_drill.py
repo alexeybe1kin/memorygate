@@ -95,6 +95,12 @@ CASES.extend([
     ("collection-inspection-falsely-healthy", "services/api/app/services/qdrant_store.py",
      '    if unverified:', '    if False:'),
 ])
+CASES.extend([
+    ("oversized-ingestion-retryable", "services/api/app/routes/conversation.py",
+     '"retryable": False', '"retryable": True'),
+    ("ingestion-cap-removed", "services/api/app/routes/conversation.py",
+     'max_length=MAX_CONTENT_CHARACTERS', 'max_length=32000'),
+])
 SAFETY_TEST = "services/api/tests/test_audit_safety.py"
 TEST = "services/api/tests/test_conversation_memory.py"
 BOOTSTRAP_TEST = "services/api/tests/test_bootstrap_revocation.py"

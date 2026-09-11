@@ -328,3 +328,5 @@ Optional `MEMORYGATE_HOSTED_COST_QUOTE` JSON records an owner-supplied estimate:
 cost is explicitly unknown. An estimate never enables spending; choose local Ollama.
 
 Qdrant health is degraded when any existing collection cannot be inspected or has an unknown vector dimension, even if collection listing succeeded.
+
+Conversation ingestion above 16,000 characters returns HTTP 413 with `detail.code=CONTENT_TOO_LARGE`, `retryable=false`, and `max_content_characters=16000`. Preserve the original transcript; retries of the same oversized payload cannot succeed.
