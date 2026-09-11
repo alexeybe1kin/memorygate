@@ -326,3 +326,5 @@ Optional `MEMORYGATE_HOSTED_COST_QUOTE` JSON records an owner-supplied estimate:
 `model`, `valid_until` (Unix seconds), HTTPS `source`, `input_token_ceiling`,
 `input_per_million_microusd`, `output_per_million_microusd`. Without a current quote,
 cost is explicitly unknown. An estimate never enables spending; choose local Ollama.
+
+Qdrant health is degraded when any existing collection cannot be inspected or has an unknown vector dimension, even if collection listing succeeded.

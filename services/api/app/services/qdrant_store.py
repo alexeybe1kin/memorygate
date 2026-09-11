@@ -81,16 +81,22 @@ def qdrant_health() -> dict:
         return {"status": "unavailable", "reason": INDEX_UNREACHABLE}
 
     mismatched = []
+    unverified = []
     for name in (QDRANT_COLLECTION, OBSERVATION_COLLECTION, ENTITY_COLLECTION):
         if name not in existing:
             continue  # created on first use, at the current dimension
         try:
             size = getattr(client.get_collection(name).config.params.vectors, "size", None)
-        except Exception:
-            continue  # reachability is already answered above; do not guess
+        except Exception as exc:
+            unverified.append(f"{name}: {type(exc).__name__}")
+            continue
+        if type(size) is not int or size <= 0:
+            unverified.append(f"{name}: unknown vector dimension")
         if size is not None and size != EMBED_DIMENSION:
             mismatched.append(f"{name}={size}")
 
+    if unverified:
+        return {"status": "degraded", "reason": "Cannot verify vector collections: " + "; ".join(unverified)}
     if mismatched:
         return {
             "status": "degraded",

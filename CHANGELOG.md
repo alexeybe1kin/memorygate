@@ -88,3 +88,5 @@ instead of hiding it.
 - Fixed a test that leaked a SQLite handle and failed only on Windows.
 
 - F10: Refuse direct hosted generation without a shared-budget adapter; audit its estimated or unknown cost and expose blocked_budget in runtime status.
+
+- F7: Report unverified Qdrant collections as degraded with the collection and failure class.

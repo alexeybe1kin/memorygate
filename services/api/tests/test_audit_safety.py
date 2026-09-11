@@ -46,3 +46,23 @@ def test_cost_quote_is_recorded_but_does_not_authorize_spending(sessions, monkey
         decision = json.loads(db.scalars(select(MemoryAudit)).one().payload_json)
     assert decision["quote"]["upper_bound_microusd"] == 1320
     assert decision["quote"]["status"] == "owner_supplied_estimate"
+
+
+@pytest.mark.parametrize("mode", ["exception", "unknown_dimension"])
+def test_failed_collection_inspection_is_never_healthy(monkeypatch, mode):
+    from types import SimpleNamespace as NS
+    from app.services import qdrant_store as store
+
+    class Client:
+        def get_collections(self):
+            return NS(collections=[NS(name=store.QDRANT_COLLECTION)])
+        def get_collection(self, name):
+            if mode == "exception":
+                raise RuntimeError("collection inspection unavailable")
+            return NS(config=NS(params=NS(vectors=NS(size=None))))
+
+    monkeypatch.setattr(store, "get_qdrant_client", Client)
+    report = store.qdrant_health()
+    assert report["status"] == "degraded"
+    assert store.QDRANT_COLLECTION in report["reason"]
+    assert ("RuntimeError" if mode == "exception" else "unknown vector dimension") in report["reason"]

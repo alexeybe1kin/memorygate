@@ -91,6 +91,10 @@ CASES.extend([
     ("refused-cost-audit-lost", "services/api/app/services/hosted_budget.py",
      '    db.commit()', '    db.rollback()'),
 ])
+CASES.extend([
+    ("collection-inspection-falsely-healthy", "services/api/app/services/qdrant_store.py",
+     '    if unverified:', '    if False:'),
+])
 SAFETY_TEST = "services/api/tests/test_audit_safety.py"
 TEST = "services/api/tests/test_conversation_memory.py"
 BOOTSTRAP_TEST = "services/api/tests/test_bootstrap_revocation.py"
