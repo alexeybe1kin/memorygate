@@ -148,17 +148,18 @@ def create_agent_access_key(db, label: str, agent_id: str) -> tuple[AgentAccessK
 
 
 def ensure_bootstrap_agent_access_key(db, raw_key: str, agent_id: str, label: str = "AgentGate Pi") -> AgentAccessKey:
-    """Seed one read-only agent key from deployment config without storing the raw key."""
+    """Configuration seeds missing authority; it never resets an owner's decision."""
     if not raw_key.startswith("mg_read_") or len(raw_key) < 24:
         raise ValueError("MEMORYGATE_BOOTSTRAP_READ_KEY must start with mg_read_ and be at least 24 characters")
     row = db.query(AgentAccessKey).filter(AgentAccessKey.label == label).first()
-    if not row:
-        row = AgentAccessKey(label=label, agent_id=agent_id, key_hash=_hash_key(raw_key), revoked=False)
-        db.add(row)
-    else:
-        row.agent_id = agent_id
-        row.key_hash = _hash_key(raw_key)
-        row.revoked = False
+    if row is not None:
+        return row
+    # Include revoked rows: renaming a key must not mint an active copy on restart.
+    for candidate in db.query(AgentAccessKey).all():
+        if _verify_key(raw_key, candidate.key_hash):
+            return candidate
+    row = AgentAccessKey(label=label, agent_id=agent_id, key_hash=_hash_key(raw_key), revoked=False)
+    db.add(row)
     db.commit()
     db.refresh(row)
     return row

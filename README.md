@@ -1,5 +1,11 @@
 # MemoryGate
 
+Bootstrap read-key configuration is initial setup, not key rotation. Once its
+label or credential exists, startup preserves the owner's revocation, agent
+assignment and stored hash. Use the owner key-management API to issue replacement
+credentials; changing bootstrap environment variables never restores authority.
+Retain revoked key rows: they record the decision that restart must respect.
+
 [Pi conversation memory: admission, retries, forgetting and bilingual drills](docs/conversation-memory.md).
 
 

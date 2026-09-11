@@ -6,6 +6,10 @@ a decision with visible consequences.
 
 ## Unreleased
 
+- Bootstrap read-key configuration now only seeds missing authority. Existing
+  revocations, agent assignments, labels and credential changes survive restart;
+  renaming a revoked key cannot create an active copy of the same credential.
+
 - Add scoped, idempotent Pi conversation ingestion with atomic source/analysis/memory
   lineage, durable deletion tombstones and retryable vector work.
 - Admit ordinary Russian preferences at the same threshold as English, including

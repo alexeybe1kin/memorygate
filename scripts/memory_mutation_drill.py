@@ -11,6 +11,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CASES = [
     (
+        "bootstrap-reactivates-revoked-key",
+        "services/api/app/services/auth_settings_service.py",
+        "    if row is not None:\n        return row",
+        "    if row is not None:\n        row.revoked = False\n        db.commit()\n        return row",
+    ),
+    (
+        "bootstrap-overwrites-owner-rotation",
+        "services/api/app/services/auth_settings_service.py",
+        "    if row is not None:\n        return row",
+        "    if row is not None:\n        row.key_hash = _hash_key(raw_key)\n        db.commit()\n        return row",
+    ),
+    (
+        "bootstrap-duplicates-renamed-key",
+        "services/api/app/services/auth_settings_service.py",
+        "if _verify_key(raw_key, candidate.key_hash):",
+        "if False:",
+    ),
+    (
         "russian-discarded",
         "services/api/app/services/signal_filter.py",
         "or re.search(russian, lower)",
@@ -67,6 +85,7 @@ CASES = [
 ]
 SOURCE = "services/api/app"
 TEST = "services/api/tests/test_conversation_memory.py"
+BOOTSTRAP_TEST = "services/api/tests/test_bootstrap_revocation.py"
 IMPORT = "services/api"
 SCRATCH = ".test-runs"
 
@@ -82,6 +101,7 @@ def main():
         )
         (target / TEST).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / TEST, target / TEST)
+        shutil.copyfile(ROOT / BOOTSTRAP_TEST, target / BOOTSTRAP_TEST)
         if filename:
             file = target / filename
             source = file.read_text(encoding="utf-8")
@@ -99,6 +119,7 @@ def main():
                 "-m",
                 "pytest",
                 TEST,
+                BOOTSTRAP_TEST,
                 "-q",
                 "-p",
                 "no:cacheprovider",
