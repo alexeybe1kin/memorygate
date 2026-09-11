@@ -101,6 +101,10 @@ CASES.extend([
     ("ingestion-cap-removed", "services/api/app/routes/conversation.py",
      'max_length=MAX_CONTENT_CHARACTERS', 'max_length=32000'),
 ])
+CASES.extend([
+    ("cryptography-pin-before-pkcs7-fix", "services/api/requirements.txt",
+     'cryptography==50.0.0', 'cryptography==46.0.1'),
+])
 SAFETY_TEST = "services/api/tests/test_audit_safety.py"
 TEST = "services/api/tests/test_conversation_memory.py"
 BOOTSTRAP_TEST = "services/api/tests/test_bootstrap_revocation.py"
@@ -121,6 +125,7 @@ def main():
         shutil.copyfile(ROOT / TEST, target / TEST)
         shutil.copyfile(ROOT / BOOTSTRAP_TEST, target / BOOTSTRAP_TEST)
         shutil.copyfile(ROOT / SAFETY_TEST, target / SAFETY_TEST)
+        shutil.copyfile(ROOT / "services/api/requirements.txt", target / "services/api/requirements.txt")
         if filename:
             file = target / filename
             source = file.read_text(encoding="utf-8")

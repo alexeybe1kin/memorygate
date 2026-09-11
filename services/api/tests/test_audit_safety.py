@@ -93,3 +93,22 @@ def test_oversized_ingestion_is_permanent_without_echoing_content(monkeypatch):
                       headers={"X-MemoryGate-Conversation-Key": "test-conversation-secret"}).status_code == 200
     assert len(calls) == 1
     client.close()
+
+
+def test_cryptography_runtime_and_manifest_cover_both_advisories():
+    from importlib.metadata import version
+    from pathlib import Path
+    from packaging.version import Version
+    from cryptography.fernet import Fernet, InvalidToken
+
+    requirements = Path(__file__).parents[1] / "requirements.txt"
+    pin = next(line.split("==")[1] for line in requirements.read_text().splitlines()
+               if line.startswith("cryptography=="))
+    assert Version(pin) >= Version("50.0.0")
+    assert Version(version("cryptography")) >= Version("50.0.0")
+    # The published format vector predates this upgrade; stored Fernet tokens must remain readable.
+    cipher = Fernet(b"cw_0x689RpI-jtRR7oE8h_eQsKImvJapLeSbXpwF4e4=")
+    token = b"gAAAAAAdwJ6wAAECAwQFBgcICQoLDA0ODy021cpGVWKZ_eEwCGM4BLLF_5CV9dOPmrhuVUPgJobwOz7JcbmrR64jVmpU4IwqDA=="
+    assert cipher.decrypt(token) == b"hello"
+    with pytest.raises(InvalidToken):
+        cipher.decrypt(token[:-10] + b"tampered==")

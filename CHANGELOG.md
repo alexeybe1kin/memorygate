@@ -92,3 +92,5 @@ instead of hiding it.
 - F7: Report unverified Qdrant collections as degraded with the collection and failure class.
 
 - F8: Return a content-free, permanent HTTP 413 error for oversized conversation ingestion; exactly 16,000 characters still works.
+
+- F12: Pin cryptography 50.0.0 to cover both the bundled OpenSSL CVE-2026-34180 fix (48.0.1) and the PKCS#7 oracle fix (50.0.0), preserving Fernet compatibility.

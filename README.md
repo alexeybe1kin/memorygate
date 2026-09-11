@@ -330,3 +330,9 @@ cost is explicitly unknown. An estimate never enables spending; choose local Oll
 Qdrant health is degraded when any existing collection cannot be inspected or has an unknown vector dimension, even if collection listing succeeded.
 
 Conversation ingestion above 16,000 characters returns HTTP 413 with `detail.code=CONTENT_TOO_LARGE`, `retryable=false`, and `max_content_characters=16000`. Preserve the original transcript; retries of the same oversized payload cannot succeed.
+
+`cryptography` is pinned to 50.0.0: 48.0.1 fixes the bundled OpenSSL advisory,
+but [the PKCS#7 advisory](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5)
+requires 50.0.0. MemoryGate uses Fernet, so this is maintenance of a security dependency,
+not a claim of a demonstrated vault exploit. Tests include the longstanding
+[Fernet verification vector](https://github.com/fernet/spec/blob/master/verify.json).
