@@ -6,6 +6,28 @@ a decision with visible consequences.
 
 ## Unreleased
 
+## 0.3.0
+
+Bilingual admission, honest health and cost, and durable deletion.
+
+- **Russian is admitted at parity with English.** The signal filter scored
+  ordinary Russian preferences at zero and dropped them before storage; it now
+  scores them like their English equivalents, so half the owner's life is no
+  longer silently unrecordable.
+- **Cross-service deletion.** A forget request from Pi removes the evidence in
+  the namespace that stored it and returns a receipt bound to that namespace.
+- **Truthful health.** A failed collection inspection reports `degraded` with
+  the reason instead of returning `ok`.
+- **Bounded, honest cost.** Unmetered hosted generation refuses rather than
+  silently spending, recording an estimate or an explicit unknown cost. Oversized
+  ingestion returns `413 CONTENT_TOO_LARGE` with `retryable=false` and the limit,
+  so a worker does not retry a payload that can never fit.
+- **Revocation survives bootstrap** — a read key the owner revoked or narrowed
+  is not reactivated on restart.
+- `cryptography` pinned to `50.0.0`, covering CVE-2026-34180 and the PKCS#7
+  advisory.
+
+
 - Bootstrap read-key configuration now only seeds missing authority. Existing
   revocations, agent assignments, labels and credential changes survive restart;
   renaming a revoked key cannot create an active copy of the same credential.

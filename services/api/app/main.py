@@ -42,7 +42,7 @@ from app.services.auth_settings_service import assert_admin_key_configured, ensu
 
 log = logging.getLogger("memorygate")
 
-SERVICE_VERSION = "0.2.0"
+SERVICE_VERSION = "0.3.0"
 
 app = FastAPI(title="MemoryGate", version=SERVICE_VERSION)
 
